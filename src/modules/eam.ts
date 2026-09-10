@@ -41,6 +41,21 @@ import {
 import { EuclidAuthenticationError, EuclidServiceError } from "../errors.js";
 import { DEFAULT_CA_CERT_PATH, DEFAULT_TIMEOUT_MS, EuclidHttpClient, type HeaderFactory } from "../http/client.js";
 import { authorityOf, hostHeaderOf, schemeOf, stripTrailingSlash } from "../url.js";
+import { listPayload, type ListOptions, type ModuleClient } from "./base.js";
+// This module imports the clients and they import nothing of it but its types, which is what keeps the
+// two-way relationship - a client needs the session it authenticates as, a session hands out the
+// clients - out of the runtime module graph. See EuclidSession.alwaysSigns for the one place that
+// would otherwise have put it back.
+import { EuclidEag } from "./eag.js";
+import { EuclidEap } from "./eap.js";
+import { EuclidEkm } from "./ekm.js";
+import { EuclidEkv } from "./ekv.js";
+import { EuclidEns } from "./ens.js";
+import { EuclidEqs } from "./eqs.js";
+import { EuclidEsm } from "./esm.js";
+import { EuclidEss } from "./ess.js";
+
+export type { ListOptions } from "./base.js";
 
 export const TARGET = "eam";
 
@@ -59,15 +74,6 @@ export const AUTH_BEARER = "bearer";
 
 /** How a session authenticates: {@link AUTH_AUTO}, {@link AUTH_SIGNATURE} or {@link AUTH_BEARER}. */
 export type AuthMode = typeof AUTH_AUTO | typeof AUTH_SIGNATURE | typeof AUTH_BEARER;
-
-/** How a listing is paged and ordered. Every field has a server-side default. */
-export interface ListOptions {
-  prefix?: string;
-  pageSize?: number;
-  pageIndex?: number;
-  sortColumn?: string;
-  sortDirection?: string;
-}
 
 /** Everything {@link EuclidSession} needs to exist, which is what a login produces. */
 export interface SessionOptions {
@@ -367,6 +373,7 @@ export class EuclidSession {
   // Kept so that a module client this session hands out reaches the same server on the same terms,
   // rather than having to be told the connection settings again.
   readonly #connection: { caCertPath: string | null; timeoutMs: number; verify: boolean };
+  readonly #modules = new Map<string, ModuleClient>();
   readonly #client: EuclidHttpClient;
 
   constructor(options: SessionOptions) {
@@ -413,9 +420,82 @@ export class EuclidSession {
     return authorityOf(this.baseUrl);
   }
 
-  /** Releases the connection this session was holding. */
+  /**
+   * Whether this session signs even the requests that would otherwise present the token.
+   *
+   * What {@link AUTH_SIGNATURE} means to a module whose action carries raw bytes: those present the
+   * token by default, and a session that asked for signatures gets them anyway. Asked of the session
+   * rather than read off {@link auth} by each module client, so that "what this mode means" is decided
+   * in one place - and so that a module client needs no value out of this module at all, which is what
+   * keeps the import between the two one-directional.
+   */
+  get alwaysSigns(): boolean {
+    return this.auth === AUTH_SIGNATURE;
+  }
+
+  /** Releases the connections this session was holding, its module clients' included. */
   close(): void {
     this.#client.close();
+    for (const module of this.#modules.values()) module.close();
+    this.#modules.clear();
+  }
+
+  // -- the other modules -----------------------------------------------------------------------
+
+  /**
+   * ESM - euclid's storage module - on this session's credentials.
+   *
+   * The same client each time, so an application that reaches for this inside a loop pays for one
+   * connection rather than one per iteration. It follows this session: a {@link changeNamespace}
+   * between two calls scopes the second one, and a {@link tokenProvider} set here is the token it
+   * presents.
+   */
+  esm(): EuclidEsm {
+    return this.#module("esm", () => new EuclidEsm(this));
+  }
+
+  /** EQS - euclid's queue module - on this session's credentials. */
+  eqs(): EuclidEqs {
+    return this.#module("eqs", () => new EuclidEqs(this));
+  }
+
+  /** ENS - euclid's notification module - on this session's credentials. */
+  ens(): EuclidEns {
+    return this.#module("ens", () => new EuclidEns(this));
+  }
+
+  /** EKM - euclid's key management module - on this session's credentials. */
+  ekm(): EuclidEkm {
+    return this.#module("ekm", () => new EuclidEkm(this));
+  }
+
+  /** EKV - euclid's key-value store - on this session's credentials. */
+  ekv(): EuclidEkv {
+    return this.#module("ekv", () => new EuclidEkv(this));
+  }
+
+  /** EAP - euclid's application platform - on this session's credentials. */
+  eap(): EuclidEap {
+    return this.#module("eap", () => new EuclidEap(this));
+  }
+
+  /** ESS - euclid's secret store - on this session's credentials. */
+  ess(): EuclidEss {
+    return this.#module("ess", () => new EuclidEss(this));
+  }
+
+  /** EAG - euclid's API gateway - on this session's credentials. */
+  eag(): EuclidEag {
+    return this.#module("eag", () => new EuclidEag(this));
+  }
+
+  /** One client per module rather than one per call, built the first time it is asked for. */
+  #module<T extends ModuleClient>(name: string, factory: () => T): T {
+    const existing = this.#modules.get(name);
+    if (existing !== undefined) return existing as T;
+    const client = factory();
+    this.#modules.set(name, client);
+    return client;
   }
 
   // -- users -----------------------------------------------------------------------------------
@@ -690,15 +770,4 @@ export class EuclidSession {
     }
     return hasKey;
   }
-}
-
-/** A listing's payload, with the server's defaults filled in where the caller said nothing. */
-function listPayload(options: ListOptions, defaultSortColumn: string): Record<string, unknown> {
-  return {
-    prefix: options.prefix ?? "",
-    pageSize: options.pageSize ?? 10,
-    pageIndex: options.pageIndex ?? 0,
-    sortColumn: options.sortColumn ?? defaultSortColumn,
-    sortDirection: options.sortDirection ?? "asc",
-  };
 }

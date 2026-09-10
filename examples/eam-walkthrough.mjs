@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Everything the SDK does today, in the order you would do it.
+ * Everything EAM does, in the order you would do it.
  *
  *   npm run build
- *   node examples/eam-walkthrough.mjs https://euclid.example.com jens secret
+ *   node examples/eam-walkthrough.mjs https://euclid.example.com:5566 admin admin
  *
  * Read-only apart from the access key it creates and deletes again, so it is safe to point at a
  * running server. The administrator-only calls at the end are skipped when the login says the user

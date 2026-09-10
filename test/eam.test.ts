@@ -13,15 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-import { RFC9421 } from "../src/auth/index.js";
+import { RFC9421 } from "../src/index.js";
 import { save } from "../src/credentials.js";
 import { Euclid } from "../src/index.js";
-import { AUTH_BEARER, AUTH_SIGNATURE } from "../src/modules/eam.js";
+import { AUTH_BEARER, AUTH_SIGNATURE } from "../src/index.js";
 import { EuclidAuthenticationError, EuclidServiceError } from "../src/errors.js";
-import { FakeGateway, type RecordedRequest } from "./fake-gateway.js";
-
-const ACCESS_KEY_ID = "AKIAEXAMPLE";
-const SECRET = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+import { ACCESS_KEY_ID, FakeGateway, prepareLogin, token, type RecordedRequest } from "./fake-gateway.js";
 
 let gateway: FakeGateway;
 let credentialsFile = "";
@@ -43,29 +40,9 @@ afterEach(async () => {
   else process.env["EUCLID_CREDENTIALS_FILE"] = previous;
 });
 
-function token(expiresInSeconds = 3600): string {
-  const segment = (payload: object): string => Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
-  return `${segment({ alg: "HS256" })}.${segment({ exp: Math.floor(Date.now() / 1000) + expiresInSeconds })}.sig`;
-}
-
-function loginResponse(theToken: string, withKey = true): Record<string, unknown> {
-  return {
-    metadata: { region: "eu-central-1", accountId: "000000000000", user: "jens" },
-    token: theToken,
-    accessKeyId: withKey ? ACCESS_KEY_ID : "",
-    secretAccessKey: withKey ? SECRET : "",
-    createdAt: "2026-09-10T10:00:00Z",
-    isAdmin: true,
-  };
-}
-
 /** A gateway that answers login and knows the credentials that login hands out. */
 function prepared(options: { withKey?: boolean; theToken?: string } = {}): string {
-  const theToken = options.theToken ?? token();
-  gateway.answer("eam", "login", loginResponse(theToken, options.withKey ?? true));
-  gateway.tokens.set(theToken, "jens");
-  if (options.withKey ?? true) gateway.accessKeys.set(ACCESS_KEY_ID, [SECRET, "jens"]);
-  return theToken;
+  return prepareLogin(gateway, { withKey: options.withKey, token: options.theToken });
 }
 
 // -- login -------------------------------------------------------------------------------------

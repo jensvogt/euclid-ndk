@@ -39,6 +39,15 @@ export function strings(document: unknown, name: string): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
+/** An object of strings - a tag set - empty when absent, with non-string values left out. */
+export function stringMap(document: unknown, name: string): Record<string, string> {
+  const value = object(document)[name];
+  const entries = Object.entries(object(value)).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string",
+  );
+  return Object.fromEntries(entries);
+}
+
 /** An array of sub-documents, empty when absent. The caller parses each one. */
 export function documents(document: unknown, name: string): unknown[] {
   const value = object(document)[name];
