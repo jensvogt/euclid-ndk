@@ -182,6 +182,26 @@ and euclid-pdk agree rather than merely each agree with itself.
 Tests are compiled rather than run through a loader or node's type stripping, so `npm test` behaves
 the same on every supported node.
 
+### Releasing
+
+Bump `version` in `package.json` and `VERSION` in `src/index.ts` - they have to agree, and
+`.github/workflows/publish.yml` refuses to publish if they and the tag do not - then tag and push:
+
+```bash
+git tag -a v0.2.0 -m "euclid-ndk 0.2.0"
+git push origin main v0.2.0
+```
+
+The tag runs the tests again (the test workflow triggers on branches, so a tag push would otherwise
+run nothing), builds `dist`, packs the tarball and publishes it to npm with a provenance
+attestation - a signed statement of which workflow, at which commit, built what was published.
+`workflow_dispatch` does the same for whatever `main` says, which is what a version whose tag
+predates this workflow needs.
+
+Publishing authenticates with an `NPM_TOKEN` secret. Once the package exists on npm, configuring a
+trusted publisher for this repository and `publish.yml` replaces it: npm then mints a short-lived
+token from the workflow's own OIDC identity, and the secret can be deleted.
+
 ## Licence
 
 Apache License 2.0.

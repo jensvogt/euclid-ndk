@@ -1,0 +1,89 @@
+name: publish
+
+# Pushing a v* tag publishes that version to npm. The manual trigger builds and publishes whatever
+# main says, which is what the first release after this workflow lands needs: a workflow only runs
+# for a tag if it already existed at that tag's commit.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # A tag push does not run the test workflow - that one triggers on branches - so the tests run
+      # here too. Publishing something that was never tested is the one mistake this workflow could
+      # make that nobody can take back: a version on npm can be deprecated, never replaced.
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      # The tag is what somebody reads; the version in package.json is what the tarball is named
+      # after. If they disagree, "npm install euclid-ndk@0.1.0" and the v0.1.0 tag are different
+      # code, and the tag is the one nobody can check afterwards.
+      - name: Check the tag against the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tagged="${GITHUB_REF_NAME#v}"
+          declared="$(node -p "require('./package.json').version")"
+          if [ "$tagged" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME says $tagged, package.json says $declared" >&2
+            exit 1
+          fi
+          echo "both say $declared"
+
+      - name: Build
+        run: npm run build
+
+      # What npm would actually ship, rather than what the repository happens to contain: "files"
+      # in package.json decides that, and getting it wrong means publishing sources and no build,
+      # or a build and no types.
+      - name: Pack
+        run: npm pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: "*.tgz"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    # id-token lets npm attach a provenance attestation - a signed statement of which workflow, at
+    # which commit, built this tarball, which is what makes a published version traceable back to
+    # this repository rather than to whoever held a token.
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/euclid-ndk
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarball
+
+      # Authenticated with an automation token in NPM_TOKEN. Once the package exists on npm, a
+      # trusted publisher configured for this repository and workflow replaces it - npm then mints
+      # a short-lived token from the OIDC identity above and the secret can be deleted.
+      - name: Publish
+        run: npm publish *.tgz --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
