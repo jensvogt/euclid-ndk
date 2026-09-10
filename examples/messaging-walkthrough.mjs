@@ -95,6 +95,25 @@ async function walk(eqs, ens, queueErn, topicErn) {
     console.log("      deleted with its receipt handle");
   }
 
+  // Holding delivery: a stopped topic still accepts what is published to it, which is what makes this a way
+  // of pausing a subscriber rather than a way of losing messages.
+  const stopped = await ens.stopTopic(topicErn);
+  console.log(`\nstopped the topic: status ${stopped.status}`);
+  await ens.publishMessage(topicErn, JSON.stringify({ order: 19 }));
+  await ens.publishMessage(topicErn, JSON.stringify({ order: 20 }));
+  const waiting = await ens.getTopicMetadata(topicErn);
+  console.log(`  published 2 more: ${waiting.held} message(s) held, nothing on the queue yet`);
+
+  // The fan-out happens inside this call, oldest first, and `released` is what went.
+  const restarted = await ens.startTopic(topicErn);
+  console.log(`started it again: status ${restarted.status}, released ${restarted.released} held message(s)`);
+  console.log(`  queue now holds ${(await eqs.getMessageCount(queueErn)).available} available message(s)`);
+
+  // Worth setting on any topic that is published to regularly: a topic is fanned out at publish time, so
+  // nothing else ever removes what it keeps.
+  const retention = await ens.setTopicRetention(topicErn, 7 * 24 * 60 * 60);
+  console.log(`\nretention set to ${retention.retentionPeriod}s - applies to what is published from now on`);
+
   console.log(`\ntopic counters: ${JSON.stringify(await ens.getMessageCount(topicErn))}`);
   const subscriptions = await ens.listSubscriptions(topicErn);
   console.log(`subscriptions:  ${JSON.stringify(subscriptions.map((entry) => entry.targetErn))}`);

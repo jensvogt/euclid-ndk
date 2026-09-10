@@ -12,7 +12,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-import { Euclid, PRIORITY_HIGH, QUEUE as QUEUE_TYPE, type EuclidEns, type EuclidSession } from "../src/index.js";
+import {
+  Euclid,
+  INSTALLATION_RETENTION,
+  PRIORITY_HIGH,
+  QUEUE as QUEUE_TYPE,
+  TOPIC_RUNNING,
+  TOPIC_STOPPED,
+  type EuclidEns,
+  type EuclidSession,
+} from "../src/index.js";
 import { EuclidServiceError } from "../src/errors.js";
 import { FakeGateway, prepareLogin } from "./fake-gateway.js";
 import { queueErn } from "./fake-queues.js";
@@ -58,6 +67,8 @@ describe("topics", () => {
           size: 4096,
           messages: 12,
           maxMessageLength: 262144,
+          status: "STOPPED",
+          retentionPeriod: 604800,
           created: "2026-01-01",
         },
         { name: "audit" },
@@ -80,9 +91,13 @@ describe("topics", () => {
     assert.deepEqual(listed.items.map((topic) => topic.name), ["order-events", "audit"]);
     assert.deepEqual(listed.items[0]?.tags, { team: "sales" });
     assert.equal(listed.items[0]?.messages, 12);
+    // A listed topic says whether it is delivering and how long it keeps what it is given.
+    assert.equal(listed.items[0]?.status, TOPIC_STOPPED);
+    assert.equal(listed.items[0]?.retentionPeriod, 604800);
     // A field the server did not send reads as empty rather than throwing.
     assert.equal(listed.items[1]?.owner, "");
     assert.equal(listed.items[1]?.maxMessageLength, 0);
+    assert.equal(listed.items[1]?.retentionPeriod, 0);
   });
 
   it("answers with the ERN, the metadata and the tags", async () => {
@@ -96,6 +111,9 @@ describe("topics", () => {
       ern: TOPIC,
       size: 4096,
       messages: 12,
+      status: "STOPPED",
+      retentionPeriod: 604800,
+      held: 7,
     });
     gateway.answer("ens", "add-topic-tag", {});
     gateway.answer("ens", "set-topic-tag", {});
@@ -106,6 +124,8 @@ describe("topics", () => {
 
     const metadata = await ens.getTopicMetadata(TOPIC);
     assert.deepEqual([metadata.namespace, metadata.messages, metadata.size], ["development", 12, 4096]);
+    // The useful half of a stopped topic: how much has piled up waiting for it to be started.
+    assert.deepEqual([metadata.status, metadata.retentionPeriod, metadata.held], [TOPIC_STOPPED, 604800, 7]);
 
     await ens.addTopicTag(TOPIC, "team", "sales");
     assert.deepEqual(gateway.last().json(), { ern: TOPIC, key: "team", value: "sales" });
@@ -132,6 +152,82 @@ describe("topics", () => {
 
     await ens.deleteTopic(TOPIC);
     assert.equal(gateway.last().action, "delete-topic");
+  });
+});
+
+// -- holding delivery ----------------------------------------------------------------------------
+
+describe("stopping and starting a topic", () => {
+  it("holds delivery without refusing publishers", async () => {
+    gateway.answer("ens", "stop-topic", { ern: TOPIC, status: "STOPPED", released: 0 });
+    gateway.answer("ens", "publish-message", { messageId: "message-1" });
+
+    const stopped = await ens.stopTopic(TOPIC);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC });
+    assert.deepEqual([stopped.status, stopped.released], [TOPIC_STOPPED, 0]);
+
+    // Still accepting: what arrives while it is stopped is kept rather than refused or lost.
+    assert.equal(await ens.publishMessage(TOPIC, "held while stopped"), "message-1");
+  });
+
+  it("hands over what it held when started again", async () => {
+    // The backlog goes out as part of this call, so `released` is delivery rather than a promise of it.
+    gateway.answer("ens", "start-topic", { ern: TOPIC, status: "RUNNING", released: 42 });
+
+    const started = await ens.startTopic(TOPIC);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC });
+    assert.deepEqual([started.ern, started.status, started.released], [TOPIC, TOPIC_RUNNING, 42]);
+  });
+
+  it("starts a topic that was never stopped without complaint", async () => {
+    gateway.answer("ens", "start-topic", { ern: TOPIC, status: "RUNNING", released: 0 });
+
+    const started = await ens.startTopic(TOPIC);
+
+    assert.deepEqual([started.status, started.released], [TOPIC_RUNNING, 0]);
+  });
+
+  it("carries the server's reason for a topic that is not there", async () => {
+    gateway.answer("ens", "stop-topic", { error: `Topic not found, ern: ${TOPIC}` }, 404);
+
+    await assert.rejects(
+      () => ens.stopTopic(TOPIC),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.target, error.action, error.status], ["ens", "stop-topic", 404]);
+        return true;
+      },
+    );
+  });
+});
+
+// -- retention -----------------------------------------------------------------------------------
+
+describe("retention", () => {
+  it("sets how long a published message is kept", async () => {
+    gateway.answer("ens", "set-topic-retention", { ern: TOPIC, retentionPeriod: 604800 });
+
+    const result = await ens.setTopicRetention(TOPIC, 604800);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, retentionPeriod: 604800 });
+    assert.deepEqual([result.ern, result.retentionPeriod], [TOPIC, 604800]);
+  });
+
+  it("takes zero to mean the installation's own period", async () => {
+    // Rather than freezing a copy of whatever that default says today.
+    gateway.answer("ens", "set-topic-retention", { ern: TOPIC, retentionPeriod: 0 });
+
+    const result = await ens.setTopicRetention(TOPIC, INSTALLATION_RETENTION);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, retentionPeriod: 0 });
+    assert.equal(result.retentionPeriod, 0);
+  });
+
+  it("refuses a negative period before the round trip", async () => {
+    await assert.rejects(() => ens.setTopicRetention(TOPIC, -1), /cannot be negative/);
+
+    assert.deepEqual(gateway.requests.filter((request) => request.action === "set-topic-retention"), []);
   });
 });
 

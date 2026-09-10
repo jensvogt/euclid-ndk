@@ -325,6 +325,8 @@ instrumentation says so rather than leaving the server to guess from a rate.
 | --- | --- |
 | `createTopic`, `listTopics`, `getTopicErn`, `getTopicMetadata`, `purgeTopic`, `purgeAllTopics`, `deleteTopic` | topics |
 | `addTopicTag`, `setTopicTag`, `deleteTopicTag` | topic tags |
+| `stopTopic`, `startTopic` | holding delivery, and handing over what was held |
+| `setTopicRetention` | how long a published message is kept at all |
 | `publishMessage`, `listMessages`, `getMessageCount` | messages |
 | `getMessageAttribute`, `setMessageAttribute` | one published message at a time |
 | `subscribe`, `listSubscriptions`, `unsubscribe` | delivery onward to a queue |
@@ -346,6 +348,48 @@ not withdrawn when the subscription goes. Subscribing is not idempotent, as in E
 
 A topic's counters are not a queue's: `available`, `send` and `resend` count delivery rather than a
 backlog, since a topic does not hold one.
+
+### Holding delivery
+
+`stopTopic` stops a topic delivering without stopping it accepting - what is published while it is stopped
+is stored and fanned out when `startTopic` runs, oldest first:
+
+```ts
+await ens.stopTopic(topic.ern);                       // subscribers are being redeployed
+// ... publishers carry on, and nothing is lost
+const started = await ens.startTopic(topic.ern);
+console.log(`${started.released} held message(s) delivered`);
+```
+
+So a subscriber being redeployed, or a downstream system taken down for the evening, is a reason to hold
+delivery rather than to lose what arrives meanwhile. `released` is delivery rather than a promise of it: the
+fan-out happens inside that call, so starting a topic that collected a fortnight of traffic is a fortnight of
+fan-out here. The server works a page at a time and marks each message as it goes, so an interrupted start has
+delivered a prefix rather than nothing and running it again picks up where it stopped. Starting a topic that
+was never stopped is not an error - nothing is held, nothing is released.
+
+`getTopicMetadata` is where to look before starting one: `held` says how much has piled up, and `status` reads
+`TOPIC_RUNNING` or `TOPIC_STOPPED`. Both also appear on every topic a listing returns. Nothing already
+delivered is affected by either call - a message on a subscriber's queue belongs to that queue.
+
+### Retention
+
+A topic is fanned out at publish time, so nothing ever consumes its messages and nothing else removes them:
+without a retention period the collection only grows, and because every topic shares it, one busy topic is
+paid for by every publish in the installation. `setTopicRetention` is what bounds that:
+
+```ts
+import { INSTALLATION_RETENTION } from "euclid-ndk";
+
+await ens.setTopicRetention(topic.ern, 7 * 24 * 60 * 60);     // seconds: keep a week
+await ens.setTopicRetention(topic.ern, INSTALLATION_RETENTION); // or follow the installation's own
+```
+
+`INSTALLATION_RETENTION` (zero) means this topic has never been told what it wants and follows
+`euclid.modules.ens.retention-period` as that changes, rather than freezing a copy of what it says today. A
+negative period is refused here before the round trip, as the server would refuse it anyway. The change
+applies to messages published afterwards: the expiry is stamped on each message when it is stored and
+enforced by a TTL index, so the ones already there keep the expiry they were given.
 
 One wire asymmetry is reproduced rather than papered over: an attribute's name travels as `name` in
 most of EQS and as `key` throughout ENS, so a request this SDK builds matches what euclid-cli and
@@ -594,9 +638,14 @@ published. `workflow_dispatch` does the same for whatever `main` says, which is 
 tag predates this workflow needs; it checks the two files against each other but has no tag to
 compare.
 
-Publishing authenticates with an `NPM_TOKEN` secret. Once the package exists on npm, configuring a
-trusted publisher for this repository and `publish.yml` replaces it: npm then mints a short-lived
-token from the workflow's own OIDC identity, and the secret can be deleted.
+Publishing authenticates as this repository rather than as somebody: npm is configured with a trusted
+publisher for `jensvogt/euclid-ndk` and `publish.yml`, and mints a short-lived token from the
+workflow's own OIDC identity - the same identity that signs the provenance attestation. The
+`NPM_TOKEN` secret remains as a fallback for a run where that exchange is unavailable, and can be
+deleted once a release has published without it. A token that npm refuses fails with
+`E403 ... You may not perform that action with these credentials`, which is the same answer for a
+read-only token, a granular token not scoped to this package, and a token npm no longer accepts for
+direct publishing - the registry does not say which.
 
 ## Licence
 

@@ -114,6 +114,8 @@ export type {
   TopicMessageAttribute,
   TopicMessageCount,
   TopicMetadata,
+  TopicRetentionResult,
+  TopicStateResult,
 } from "./dto/ens.js";
 export type { DeleteSecretResult, Secret, SecretValue } from "./dto/ess.js";
 export type {
@@ -216,6 +218,9 @@ export {
 } from "./modules/ekm.js";
 export {
   EuclidEns,
+  INSTALLATION_RETENTION,
+  TOPIC_RUNNING,
+  TOPIC_STOPPED,
   type PublishMessageOptions,
   type PurgeAllTopicsOptions,
 } from "./modules/ens.js";

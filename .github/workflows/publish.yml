@@ -75,9 +75,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
 
-    # id-token lets npm attach a provenance attestation - a signed statement of which workflow, at
-    # which commit, built this tarball, which is what makes a published version traceable back to
-    # this repository rather than to whoever held a token.
+    # id-token is what both halves of this job's authentication rest on: npm exchanges this
+    # workflow's OIDC identity for a short-lived publish token, and signs the provenance attestation
+    # with it - a statement of which workflow, at which commit, built this tarball. Which is what
+    # makes a published version traceable back to this repository rather than to whoever held a token.
     environment:
       name: npm
       url: https://www.npmjs.com/package/euclid-ndk
@@ -91,13 +92,19 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      # The OIDC exchange needs npm 11.5.1 or newer, which the node version does not guarantee: a
+      # runner image lagging a few weeks would otherwise fall back to the token without saying so.
+      - name: Use an npm that can exchange the OIDC token
+        run: npm install -g npm@latest
+
       - uses: actions/download-artifact@v8
         with:
           name: tarball
 
-      # Authenticated with an automation token in NPM_TOKEN. Once the package exists on npm, a
-      # trusted publisher configured for this repository and workflow replaces it - npm then mints
-      # a short-lived token from the OIDC identity above and the secret can be deleted.
+      # Authenticated by this repository's trusted publisher on npm, so nothing long-lived is
+      # involved and there is no secret to leak. NPM_TOKEN stays as the fallback for a run where the
+      # exchange is not available - npm prefers the OIDC identity when it can get one - and the
+      # secret can be deleted once a release has published without it.
       - name: Publish
         run: npm publish *.tgz --provenance --access public
         env:

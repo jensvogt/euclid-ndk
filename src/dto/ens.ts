@@ -24,6 +24,16 @@ export interface Topic {
   size: number;
   messages: number;
   maxMessageLength: number;
+  /**
+   * `RUNNING` or `STOPPED` - see {@link import("../modules/ens.js").EuclidEns.stopTopic}. A stopped topic
+   * still accepts what is published to it; it holds it rather than fanning it out.
+   */
+  status: string;
+  /**
+   * How long a published message is kept, in seconds. Zero means this topic has never been told what it
+   * wants and follows the installation's default as that changes.
+   */
+  retentionPeriod: number;
   created: string;
   modified: string;
 }
@@ -63,7 +73,7 @@ export interface CreateTopicResult {
   ern: string;
 }
 
-/** Where a topic lives and how much has been published to it. */
+/** Where a topic lives, how much has been published to it, and whether it is delivering. */
 export interface TopicMetadata {
   region: string;
   accountId: string;
@@ -73,6 +83,35 @@ export interface TopicMetadata {
   ern: string;
   size: number;
   messages: number;
+  /** `RUNNING` or `STOPPED`. */
+  status: string;
+  /** How long a published message is kept, in seconds; zero follows the installation's default. */
+  retentionPeriod: number;
+  /**
+   * How many messages are waiting for this topic to be started again. Nothing but a stopped topic - or one
+   * that was stopped - has any, and the server only counts them for a topic that is stopped.
+   */
+  held: number;
+}
+
+/**
+ * A topic after being started or stopped, and what starting it let go.
+ *
+ * `released` is how many held messages were delivered to the topic's subscriptions on the way - zero for a
+ * stop, and zero for a start of a topic that was never stopped. It is delivery rather than a promise of it:
+ * the messages went to the subscriptions as they went out.
+ */
+export interface TopicStateResult {
+  ern: string;
+  /** `RUNNING` or `STOPPED`, as it now stands. */
+  status: string;
+  released: number;
+}
+
+/** A topic's retention period after setting it, in seconds. Zero means the installation's own. */
+export interface TopicRetentionResult {
+  ern: string;
+  retentionPeriod: number;
 }
 
 /**
@@ -99,6 +138,8 @@ export function toTopic(document: unknown): Topic {
     size: number(document, "size"),
     messages: number(document, "messages"),
     maxMessageLength: number(document, "maxMessageLength"),
+    status: text(document, "status"),
+    retentionPeriod: number(document, "retentionPeriod"),
     created: text(document, "created"),
     modified: text(document, "modified"),
   };
@@ -141,7 +182,22 @@ export function toTopicMetadata(document: unknown): TopicMetadata {
     ern: text(document, "ern"),
     size: number(document, "size"),
     messages: number(document, "messages"),
+    status: text(document, "status"),
+    retentionPeriod: number(document, "retentionPeriod"),
+    held: number(document, "held"),
   };
+}
+
+export function toTopicStateResult(document: unknown): TopicStateResult {
+  return {
+    ern: text(document, "ern"),
+    status: text(document, "status"),
+    released: number(document, "released"),
+  };
+}
+
+export function toTopicRetentionResult(document: unknown): TopicRetentionResult {
+  return { ern: text(document, "ern"), retentionPeriod: number(document, "retentionPeriod") };
 }
 
 export function toTopicMessageCount(document: unknown): TopicMessageCount {
