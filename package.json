@@ -36,7 +36,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "pretest": "tsc --project tsconfig.json",
-    "test": "node --test build/test/",
+    "test": "node --test build/test/*.test.js",
     "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {},
