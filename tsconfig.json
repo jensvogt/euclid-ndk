@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // The development configuration: src and test together, compiled into build/ so that the tests
+  // can be run by node's own test runner. tsconfig.build.json is what produces the published dist.
+  "compilerOptions": {
+    // ES2022 is what the oldest Node this package supports understands in full, and NodeNext is
+    // what makes TypeScript resolve imports the way Node itself will at runtime - which is why a
+    // relative import here is written with the ".js" extension the emitted file will have.
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Every import is either a value or erased as a type, and says which. Keeps the emitted
+    // JavaScript a mechanical stripping of the source rather than something the compiler inferred.
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+
+    "rootDir": ".",
+    "outDir": "build",
+    "declaration": false,
+    "sourceMap": true,
+    "skipLibCheck": true
+  },
+  "include": ["src", "test"]
+}

@@ -1,0 +1,47 @@
+{
+  "name": "euclid-ndk",
+  "version": "0.1.0",
+  "description": "Node.js SDK for the euclid server",
+  "keywords": [
+    "euclid",
+    "sdk",
+    "eam",
+    "sigv4",
+    "rfc9421"
+  ],
+  "homepage": "https://github.com/jensvogt/euclid-ndk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jensvogt/euclid-ndk.git"
+  },
+  "bugs": "https://github.com/jensvogt/euclid-ndk/issues",
+  "license": "Apache-2.0",
+  "author": "Dr. Jens Vogt <jensvogt47@gmail.com>",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "pretest": "tsc --project tsconfig.json",
+    "test": "node --test build/test/",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

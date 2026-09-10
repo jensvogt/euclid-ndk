@@ -1,0 +1,39 @@
+name: node
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is 20 (the oldest node still supported when this was written) and the ceiling is
+        # whatever is current; both ends are worth running, and so is the one in between that most
+        # images ship.
+        node-version: ["20", "22", "24"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install
+        run: npm ci
+
+      # Compiles src and test, then runs node's own test runner over the output. The published
+      # build is checked separately below, because it is a different tsconfig and a different set of
+      # files - and it is the one npm actually ships.
+      - name: Test
+        run: npm test
+
+      - name: Build what npm would publish
+        run: npm run build
+
+      - name: Check the package contents
+        run: npm pack --dry-run
