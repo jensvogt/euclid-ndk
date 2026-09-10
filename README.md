@@ -574,19 +574,25 @@ the same on every supported node.
 
 ### Releasing
 
-Bump `version` in `package.json` and `VERSION` in `src/index.ts` - they have to agree, and
-`.github/workflows/publish.yml` refuses to publish if they and the tag do not - then tag and push:
+A release says its version in three places, and `.github/workflows/publish.yml` refuses to publish
+unless all three agree: the tag, `version` in `package.json` (which names the tarball), and `VERSION`
+in `src/index.ts` (which is what an application asking this SDK its own version is told - checked
+against the built `dist`, since that is what ships). So bump the two files, then tag and push:
 
 ```bash
+npm version 0.2.0 --no-git-tag-version     # package.json
+$EDITOR src/index.ts                       # VERSION
+git commit -am "chore: release 0.2.0"
 git tag -a v0.2.0 -m "euclid-ndk 0.2.0"
 git push origin main v0.2.0
 ```
 
 The tag runs the tests again (the test workflow triggers on branches, so a tag push would otherwise
-run nothing), builds `dist`, packs the tarball and publishes it to npm with a provenance
-attestation - a signed statement of which workflow, at which commit, built what was published.
-`workflow_dispatch` does the same for whatever `main` says, which is what a version whose tag
-predates this workflow needs.
+run nothing), checks the three versions, builds `dist`, packs the tarball and publishes it to npm with
+a provenance attestation - a signed statement of which workflow, at which commit, built what was
+published. `workflow_dispatch` does the same for whatever `main` says, which is what a version whose
+tag predates this workflow needs; it checks the two files against each other but has no tag to
+compare.
 
 Publishing authenticates with an `NPM_TOKEN` secret. Once the package exists on npm, configuring a
 trusted publisher for this repository and `publish.yml` replaces it: npm then mints a short-lived

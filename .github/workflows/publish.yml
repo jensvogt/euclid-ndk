@@ -45,6 +45,21 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The version a release declares lives in two files - package.json, which names the tarball,
+      # and VERSION in src/index.ts, which is what an application reading euclid-ndk's own version
+      # is told. Read out of the build rather than grepped out of the source, because the build is
+      # what ships; a release that bumped one and forgot the other would otherwise publish a package
+      # reporting a number the registry has never heard of.
+      - name: Check the build against the version
+        run: |
+          declared="$(node -p "require('./package.json').version")"
+          built="$(node --input-type=module -e "import { VERSION } from './dist/index.js'; process.stdout.write(VERSION)")"
+          if [ "$built" != "$declared" ]; then
+            echo "package.json says $declared, VERSION in src/index.ts says $built" >&2
+            exit 1
+          fi
+          echo "both say $declared"
+
       # What npm would actually ship, rather than what the repository happens to contain: "files"
       # in package.json decides that, and getting it wrong means publishing sources and no build,
       # or a build and no types.
