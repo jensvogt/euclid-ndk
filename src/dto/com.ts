@@ -31,6 +31,15 @@ export const QUEUE = "SQS";
 /** ...or a topic. The two name different modules, and this is what says which. */
 export const TOPIC = "SNS";
 
+/**
+ * The namespace that means "every namespace of the account" on the actions that take one as a filter.
+ *
+ * Empty rather than absent, because the server reads the two the same way: a blanket purge is scoped by the
+ * account and region it was given, and narrowed by a namespace only when one is named. Spelled out because
+ * "" is the one value whose meaning here is the opposite of narrow.
+ */
+export const EVERY_NAMESPACE = "";
+
 /** The type tags `Euclid::Dto::COM::Variant` round-trips a value through. */
 export const VARIANT_INT = "int";
 export const VARIANT_LONG = "long";

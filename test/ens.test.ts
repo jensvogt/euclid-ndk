@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 
 import {
   Euclid,
+  EVERY_NAMESPACE,
   INSTALLATION_RETENTION,
   PRIORITY_HIGH,
   QUEUE as QUEUE_TYPE,
@@ -132,6 +133,21 @@ describe("topics", () => {
     await ens.setTopicTag(TOPIC, "team", "ops");
     await ens.deleteTopicTag(TOPIC, "team");
     assert.deepEqual(gateway.last().json(), { ern: TOPIC, key: "team" });
+  });
+
+  it("follows the session's namespace on a blanket purge, and takes every namespace when told", async () => {
+    // The server reads an empty namespace as every namespace of the account, so an explicit empty string has
+    // to survive rather than fall back to the session's - which is the whole difference between the two.
+    gateway.answer("eam", "change-namespace", {});
+    gateway.answer("ens", "purge-all-topics", {});
+
+    await session.changeNamespace("development");
+
+    await ens.purgeAllTopics();
+    assert.equal(gateway.last().json()["nameSpace"], "development");
+
+    await ens.purgeAllTopics({ namespace: EVERY_NAMESPACE });
+    assert.equal(gateway.last().json()["nameSpace"], "");
   });
 
   it("purges and deletes them", async () => {

@@ -101,11 +101,9 @@ jobs:
         with:
           name: tarball
 
-      # Authenticated by this repository's trusted publisher on npm, so nothing long-lived is
-      # involved and there is no secret to leak. NPM_TOKEN stays as the fallback for a run where the
-      # exchange is not available - npm prefers the OIDC identity when it can get one - and the
-      # secret can be deleted once a release has published without it.
+      # Authenticated by this repository's trusted publisher on npm: no token is configured here, so the
+      # OIDC identity above is the only credential there is and a run that cannot exchange it fails
+      # rather than quietly reaching for a secret. Nothing long-lived is involved, and there is nothing
+      # to leak or rotate.
       - name: Publish
         run: npm publish *.tgz --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

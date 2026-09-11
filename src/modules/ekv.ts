@@ -125,8 +125,10 @@ export class EuclidEkv extends ModuleClient {
   /**
    * Creates a table, and answers with it as it was created - with an item count of zero.
    *
-   * Refused with HTTP 409 if a table of that name already exists, and with HTTP 400 if a key attribute is
-   * empty, starts with `$`, contains `.`, or if the sort key names the same attribute as the partition key.
+   * Refused with HTTP 409 if this account and namespace already hold a table of that name - the pair a table
+   * name is unique within, so the same name in another namespace is another table - and with HTTP 400 if a
+   * key attribute is empty, starts with `$`, contains `.`, or if the sort key names the same attribute as the
+   * partition key.
    *
    * @param name name of the table
    * @param partitionKey the attribute every item is identified by.
@@ -157,7 +159,11 @@ export class EuclidEkv extends ModuleClient {
     return toTableDescription(await this.call("describe-table", { name }));
   }
 
-  /** One page of tables, each described as {@link describeTable} would describe it. */
+  /**
+   * One page of tables, each described as {@link describeTable} would describe it.
+   *
+   * The session's own account and namespace, and `total` counts that scope rather than the account.
+   */
   async listTables(options: ListOptions = {}): Promise<Page<TableDescription>> {
     const response = await this.call("list-tables", listPayload(options, "name"));
     return toPage(response, "tables", toTableDescription);

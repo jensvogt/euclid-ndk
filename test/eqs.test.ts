@@ -170,12 +170,30 @@ describe("queues", () => {
     assert.deepEqual(gateway.last().json(), { ern: QUEUE, visibility: 120 });
   });
 
-  it("purges the session's own account unless told otherwise", async () => {
+  it("purges every namespace of the session's own account unless told otherwise", async () => {
+    // An empty namespace is what the server reads as "all of them", and this call has emptied the account
+    // since it existed - so narrowing it by default would quietly spare queues a caller meant to purge.
     gateway.answer("eqs", "purge-all-queues", {});
 
     await eqs.purgeAllQueues();
 
-    assert.deepEqual(gateway.last().json(), { region: "eu-central-1", accountId: "000000000000" });
+    assert.deepEqual(gateway.last().json(), {
+      region: "eu-central-1",
+      accountId: "000000000000",
+      nameSpace: "",
+    });
+  });
+
+  it("narrows a blanket purge to one namespace when asked", async () => {
+    gateway.answer("eqs", "purge-all-queues", {});
+
+    await eqs.purgeAllQueues({ namespace: "development", accountId: "111", region: "eu-west-1" });
+
+    assert.deepEqual(gateway.last().json(), {
+      region: "eu-west-1",
+      accountId: "111",
+      nameSpace: "development",
+    });
   });
 
   it("redrives a dead letter queue", async () => {

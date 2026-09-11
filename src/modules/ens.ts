@@ -81,10 +81,15 @@ export interface PublishMessageOptions {
   priority?: string;
 }
 
-/** Which account's topics a blanket purge applies to. All three default to the session's own. */
+/** Which topics a blanket purge applies to. The account and region default to the session's own. */
 export interface PurgeAllTopicsOptions {
   region?: string;
   accountId?: string;
+  /**
+   * The namespace to narrow it to, which defaults to the session's own. Name
+   * {@link import("../dto/com.js").EVERY_NAMESPACE} to purge every namespace of the account instead - an
+   * empty string is a value here rather than "unspecified", since it is what the server reads as "all".
+   */
   namespace?: string;
 }
 
@@ -198,12 +203,19 @@ export class EuclidEns extends ModuleClient {
    * Purges every topic of an account, which defaults to this session's own.
    *
    * As blunt as it sounds, and there is no undo: it exists for a test environment between runs.
+   *
+   * Narrowed to the session's namespace unless told otherwise, so a session scoped to one namespace cannot
+   * empty another's topics by accident. `namespace: EVERY_NAMESPACE` asks for the account's lot, which is
+   * what {@link import("./eqs.js").EuclidEqs.purgeAllQueues} does by default - the two differ because each
+   * keeps the default it shipped with.
    */
   async purgeAllTopics(options: PurgeAllTopicsOptions = {}): Promise<void> {
     await this.call("purge-all-topics", {
       region: options.region || this.session.region,
       accountId: options.accountId || this.session.accountId,
-      nameSpace: options.namespace || this.session.namespace,
+      // Nullish rather than falsy: an explicit empty string is how a caller asks for every namespace, and
+      // falling back to the session's there would make that impossible to say.
+      nameSpace: options.namespace ?? this.session.namespace,
     });
   }
 

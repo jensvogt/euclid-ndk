@@ -131,12 +131,12 @@ export class EuclidEag extends ModuleClient {
   /**
    * Publishes a path, and sends everything beneath it to an application or to a module.
    *
-   * Refused with HTTP 409 if the route ID is taken, or if another route already answers for this path and
-   * one of these methods. An application that does not exist is refused with 404 rather than becoming a
+   * Refused with HTTP 409 if this account and namespace already use the route ID, or if another route already
+   * answers for this path and one of these methods. An application that does not exist is refused with 404 rather than becoming a
    * route that answers 503 for every request - which looks like an application that is down rather than one
    * that was never deployed.
    *
-   * @param routeId the name to manage this route under, unique across the installation.
+   * @param routeId the name to manage this route under, unique within this account and namespace.
    * @param path the path prefix to publish, which has to start with `/`.
    * @param options request options
    * @throws {Error} if neither an application nor a module was named, or both were. The server refuses that
@@ -218,6 +218,10 @@ export class EuclidEag extends ModuleClient {
    *
    * The prefix filters on the path rather than on the route ID, and is matched literally rather than as a
    * pattern, so `/api/v1.0` does not also match `/api/v1X0`.
+   *
+   * The session's own account and namespace, as {@link getRoute}, {@link updateRoute} and
+   * {@link deleteRoute} are - so this lists what the session can then address rather than everything the
+   * gateway serves. The proxy itself routes across every namespace; this is the management view of it.
    */
   async listRoutes(pathPrefix = ""): Promise<Route[]> {
     const response = await this.call("list-routes", { prefix: pathPrefix });

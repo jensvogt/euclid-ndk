@@ -29,8 +29,10 @@ import { FakeGateway, prepareLogin } from "./fake-gateway.js";
 
 const APPLICATION = {
   applicationId: "order-service",
-  ern: "ern:eap:application/order-service",
+  runtimeName: "order-service-4k7m2q",
+  ern: "ern:eap:application/development/order-service",
   accountId: "000000000000",
+  namespace: "development",
   region: "eu-central-1",
   runtime: "JAVA",
   bucketErn: "ern:esm:bucket/artifacts",
@@ -121,6 +123,10 @@ describe("deploying", () => {
 
     assert.equal(application.bucketErn, "ern:esm:bucket/artifacts");
     assert.equal(application.artifactKey, "order-service-1.4.0.jar");
+    // An ID is only unique within an account and namespace, so what the host calls this application is a
+    // name of its own - and the namespace is the other half of what identifies it.
+    assert.equal(application.runtimeName, "order-service-4k7m2q");
+    assert.equal(application.namespace, "development");
     assert.deepEqual(application.resources, ["ern:eqs:queue/orders"]);
     // Nothing runs yet: a new application is stopped until somebody starts it.
     assert.deepEqual([application.desiredState, application.state], [STATE_STOPPED, STATE_STOPPED]);
@@ -166,6 +172,46 @@ describe("deploying", () => {
       readyTimeoutMs: 60000,
       namespace: "production",
     });
+  });
+
+  it("moves an application between namespaces", async () => {
+    // A move rather than a field change: the ERN follows the namespace while the runtime name does not, so
+    // nothing on the host moves underneath a running instance.
+    gateway.answer("eap", "update-application", {
+      ...APPLICATION,
+      namespace: "production",
+      ern: "ern:eap:application/production/order-service",
+    });
+
+    const moved = await eap.updateApplication("order-service", { namespace: "production" });
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", namespace: "production" });
+    assert.equal(moved.namespace, "production");
+    assert.equal(moved.runtimeName, "order-service-4k7m2q");
+
+    // Empty is a value here rather than "leave it alone": it moves the application to the account root.
+    gateway.answer("eap", "update-application", { ...APPLICATION, namespace: "" });
+    const atRoot = await eap.updateApplication("order-service", { namespace: "" });
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", namespace: "" });
+    assert.equal(atRoot.namespace, "");
+  });
+
+  it("refuses a move into a namespace that has that ID", async () => {
+    gateway.answer(
+      "eap",
+      "update-application",
+      { error: "Namespace 'production' already has an application called 'order-service'" },
+      409,
+    );
+
+    await assert.rejects(
+      () => eap.updateApplication("order-service", { namespace: "production" }),
+      (error: EuclidServiceError) => {
+        assert.equal(error.status, 409);
+        assert.ok(error.reason.includes("already has an application"));
+        return true;
+      },
+    );
   });
 
   it("leaves resources out of an update that does not mention them", async () => {
@@ -265,9 +311,11 @@ describe("running", () => {
     const applications = await eap.listApplications("order");
     assert.deepEqual(gateway.last().json(), { prefix: "order" });
     assert.deepEqual(applications.map((application) => application.applicationId), ["order-service", "reports"]);
-    // A field the server did not send reads as empty rather than throwing.
+    // A field the server did not send reads as empty rather than throwing - including the two an
+    // application deployed before the scope existed has nothing to say about.
     assert.deepEqual(applications[1]?.endpoints, []);
     assert.equal(applications[1]?.minInstances, 0);
+    assert.deepEqual([applications[1]?.runtimeName, applications[1]?.namespace], ["", ""]);
 
     assert.deepEqual(await eap.listApplications(), applications);
     assert.deepEqual(gateway.last().json(), { prefix: "" });

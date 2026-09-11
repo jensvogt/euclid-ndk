@@ -20,7 +20,7 @@
  * back - which is why the delete belongs after the work rather than before it.
  */
 
-import { variantMapToJson, variantOf, variantToJson, type VariantInput } from "../dto/com.js";
+import { EVERY_NAMESPACE, variantMapToJson, variantOf, variantToJson, type VariantInput } from "../dto/com.js";
 import { toPage, type Page } from "../dto/eam.js";
 import {
   toCreateQueueResult,
@@ -127,10 +127,16 @@ export interface ReceiveMessagesOptions {
   waitTimeSeconds?: number;
 }
 
-/** Which account's queues a blanket purge applies to. Both default to the session's own. */
+/** Which queues a blanket purge applies to. The account and region default to the session's own. */
 export interface PurgeAllQueuesOptions {
   region?: string;
   accountId?: string;
+  /**
+   * The namespace to narrow it to. Left out - or named as
+   * {@link import("../dto/com.js").EVERY_NAMESPACE} - it purges every namespace of the account, which is
+   * what this call has always done.
+   */
+  namespace?: string;
 }
 
 /**
@@ -208,11 +214,17 @@ export class EuclidEqs extends ModuleClient {
    *
    * Exactly as blunt as it sounds, and there is no undo: it exists for a test environment between runs
    * rather than for anything that has consumers attached.
+   *
+   * Every namespace of that account unless `namespace` narrows it - the opposite default to
+   * {@link import("./ens.js").EuclidEns.purgeAllTopics}, which follows the session. Neither is wrong: this
+   * one has purged the account since it existed, and narrowing it silently would quietly spare queues a
+   * caller meant to empty.
    */
   async purgeAllQueues(options: PurgeAllQueuesOptions = {}): Promise<void> {
     await this.call("purge-all-queues", {
       region: options.region || this.session.region,
       accountId: options.accountId || this.session.accountId,
+      nameSpace: options.namespace ?? EVERY_NAMESPACE,
     });
   }
 

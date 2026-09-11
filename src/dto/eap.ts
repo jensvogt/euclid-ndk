@@ -36,8 +36,25 @@ export interface Endpoint {
  */
 export interface Application {
   applicationId: string;
+  /**
+   * What everything belonging to this application on a host is actually called: its directory under the data
+   * directory, its row in the module list, its socket, its log channel, and the technical principal named
+   * after it (`app-<runtimeName>`).
+   *
+   * Distinct from `applicationId` because an ID is only unique within an account and namespace, while these
+   * names are installation-wide - so the server issues a short unique name at deployment and keeps it across
+   * a move between namespaces. For an application deployed before the field existed it is the bare
+   * `applicationId`.
+   */
+  runtimeName: string;
   ern: string;
   accountId: string;
+  /**
+   * The other half of what identifies this application: an `applicationId` is unique within
+   * (`accountId`, `namespace`), so the ID alone does not say which application this is. Empty for one at the
+   * account root, and the only way to see where an application ended up after a move.
+   */
+  namespace: string;
   region: string;
   /** `JAVA`, `PYTHON`, `NODEJS` or `BINARY` - see {@link import("../modules/eap.js")}. */
   runtime: string;
@@ -101,8 +118,10 @@ export function toEndpoint(document: unknown): Endpoint {
 export function toApplication(document: unknown): Application {
   return {
     applicationId: text(document, "applicationId"),
+    runtimeName: text(document, "runtimeName"),
     ern: text(document, "ern"),
     accountId: text(document, "accountId"),
+    namespace: text(document, "namespace"),
     region: text(document, "region"),
     runtime: text(document, "runtime"),
     bucketErn: text(document, "bucketErn"),

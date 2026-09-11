@@ -88,6 +88,39 @@ its own credentials.
 
 Pass `useCache(false)` to force a fresh login and leave the file alone.
 
+### Account and namespace scope
+
+Everything euclid stores belongs to an account and a namespace. The account is the logged-in user's; the
+namespace is the session's, and travels as `x-euclid-namespace` on every request - set it with `namespace()`
+at login or `changeNamespace` later, and read it back from `session.namespace`. Empty means the account root,
+which is a scope like any other rather than "all of them".
+
+That pair is what a **name** is unique within, so a bare name always means "mine, here":
+
+```ts
+await session.changeNamespace("development");
+const ern = await session.eqs().getQueueErn("orders");   // development's orders queue
+
+await session.changeNamespace("production");
+const other = await session.eqs().getQueueErn("orders"); // a different queue, same name
+```
+
+The same holds for a bucket name, a topic name, an EKV table name, an EAP application ID and an EAG route ID:
+two namespaces can each have one of that name, and neither can reach the other's by naming it. An **ERN**
+carries its scope, so anything that takes one is unambiguous whatever the session is scoped to - which is why
+most calls here take ERNs and only the `get*Ern` lookups take names.
+
+Listings are scoped the same way. `listTables`, `listApplications` and `listRoutes` show what this session
+could then address rather than everything the installation holds; `changeNamespace` is how to look elsewhere.
+
+Two places treat a namespace as a filter rather than as a scope, because the server does:
+
+* `purgeAllQueues` and `purgeAllTopics` take a `namespace`, where **empty means every namespace of the
+  account**. Their defaults differ - the queue one purges the account, the topic one the session's namespace -
+  and each keeps what it shipped with; `EVERY_NAMESPACE` asks for all of them explicitly.
+* `updateApplication({ namespace })` *moves* an application, since the namespace is part of what identifies
+  it. See [What EAP covers](#what-eap-covers).
+
 ### Signing
 
 A login returns two credentials: a bearer token, and - when the user has one - an access key and
@@ -502,7 +535,19 @@ await eap.startApplication("order-service");
 
 The deployment says which buckets and queues the application may reach, and euclid grants those to the
 identity it runs as: a technical principal it creates unless one is named, with no password, no login and
-one access key, so that nothing an application leaks is a person's credential.
+one access key, so that nothing an application leaks is a person's credential. Those names are resolved in
+the session's namespace, so a deployment cannot grant itself another namespace's bucket by naming it.
+
+An application ID is unique within an account and namespace, not across the installation - so `namespace` is
+the other half of what identifies one, and `runtimeName` is what everything on the host is actually called:
+its directory, its socket, its log channel and the principal named after it (`app-<runtimeName>`). The server
+issues that name at deployment and keeps it afterwards, including across a move. For an application deployed
+before the field existed it is the bare application ID.
+
+`updateApplication({ namespace })` is that move: the ERN is rebuilt, the row moves, and the technical
+principal's grant follows - while the runtime name stays, so nothing shifts underneath a running instance on
+the host. An empty string moves the application back to the account root, and a namespace that already has an
+application of this ID refuses the move with HTTP 409.
 
 Starting asks rather than waits. `desiredState` is what somebody asked for and `state` is what is
 actually answering, so a freshly started application usually comes back `RUNNING`/`STOPPED` - the two
@@ -639,13 +684,15 @@ tag predates this workflow needs; it checks the two files against each other but
 compare.
 
 Publishing authenticates as this repository rather than as somebody: npm is configured with a trusted
-publisher for `jensvogt/euclid-ndk` and `publish.yml`, and mints a short-lived token from the
-workflow's own OIDC identity - the same identity that signs the provenance attestation. The
-`NPM_TOKEN` secret remains as a fallback for a run where that exchange is unavailable, and can be
-deleted once a release has published without it. A token that npm refuses fails with
-`E403 ... You may not perform that action with these credentials`, which is the same answer for a
-read-only token, a granular token not scoped to this package, and a token npm no longer accepts for
-direct publishing - the registry does not say which.
+publisher for `jensvogt/euclid-ndk` and `publish.yml`, and mints a short-lived token from the workflow's
+own OIDC identity - the same identity that signs the provenance attestation. No token is configured in
+the workflow, so that exchange is the only way in and a run that cannot make it fails instead of falling
+back to a secret.
+
+If a release ever has to go out on a token again, `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` on the
+publish step is the whole change. Be ready for `E403 ... You may not perform that action with these
+credentials`, which is the registry's one answer for a read-only token, a granular token not scoped to
+this package, and a token npm no longer accepts for direct publishing - it does not say which.
 
 ## Licence
 

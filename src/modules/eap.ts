@@ -115,7 +115,13 @@ export interface CreateApplicationOptions {
  * hands the artifact back to the runtime's own interpreter.
  *
  * `buckets` and `queues` are re-resolved together whenever either is named, so naming one and not the
- * other revokes what the other used to grant. Pass both, or neither.
+ * other revokes what the other used to grant. Pass both, or neither. They are resolved in the namespace the
+ * application is in *after* this update, which is what makes moving one and re-granting its resources a
+ * single call.
+ *
+ * `namespace` is a move rather than a field change, and the one way an application deployed before
+ * applications carried a namespace can acquire one without being deleted and made again - see
+ * {@link EuclidEap.updateApplication}.
  */
 export interface UpdateApplicationChanges {
   runtime?: string;
@@ -165,9 +171,14 @@ export class EuclidEap extends ModuleClient {
    * Deploys an application, stopped, and answers with it as it was stored.
    *
    * Nothing runs yet: a new application's desired state is `STOPPED`, so {@link startApplication} is what
-   * puts it in service. Refused with HTTP 409 if the ID is taken, and with 404 if the bucket, the
-   * artifact, a named resource or a named user is not there - a deployment pointing at nothing would
-   * otherwise become an application that fails to start for a reason nobody can see.
+   * puts it in service. Refused with HTTP 409 if this account and namespace already have an application of
+   * that ID - the pair it is unique within, so the same ID in another namespace is another application - and
+   * with 404 if the bucket, the artifact, a named resource or a named user is not there. A deployment
+   * pointing at nothing would otherwise become an application that fails to start for a reason nobody can
+   * see.
+   *
+   * The namespace is the session's, and the buckets and queues named here are resolved in it: a deployment
+   * cannot grant itself another namespace's bucket by naming it.
    *
    * @param applicationId aoolication ID
    * @param runtime {@link RUNTIME_JAVA}, {@link RUNTIME_PYTHON}, {@link RUNTIME_NODEJS} or
@@ -207,6 +218,13 @@ export class EuclidEap extends ModuleClient {
    *
    * Changing the artifact is a change of what will run next; {@link redeployApplication} is what a new
    * build of the same application usually wants.
+   *
+   * Changing the `namespace` moves the application: its ERN is rebuilt from the namespace it lands in, its
+   * row moves, and the grant of the technical principal it runs as follows it - while its
+   * {@link import("../dto/eap.js").Application.runtimeName} stays as it was, so the directory, socket and log
+   * channel on the host do not move underneath a running instance. An empty string moves it back to the
+   * account root, which is why absent and empty mean different things here, and a namespace that already has
+   * an application of this ID refuses the move with HTTP 409.
    */
   async updateApplication(applicationId: string, changes: UpdateApplicationChanges = {}): Promise<Application> {
     const payload: Record<string, unknown> = { applicationId };
@@ -256,6 +274,11 @@ export class EuclidEap extends ModuleClient {
 
   /**
    * The applications whose ID starts with a prefix; an empty prefix lists them all.
+   *
+   * The session's own account and namespace, not the installation: every other action here resolves an
+   * application ID in the namespace the request was made in, so a listing that crossed namespaces would show
+   * applications the caller cannot then address. {@link EuclidSession.changeNamespace} is how to look
+   * elsewhere.
    *
    * A list rather than a page: EAP answers with every match at once, since an installation has tens of
    * applications rather than thousands.
