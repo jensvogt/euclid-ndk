@@ -17,6 +17,7 @@ import {
   EVERY_NAMESPACE,
   INSTALLATION_RETENTION,
   PRIORITY_HIGH,
+  RETENTION_FOREVER,
   QUEUE as QUEUE_TYPE,
   TOPIC_RUNNING,
   TOPIC_STOPPED,
@@ -218,6 +219,48 @@ describe("stopping and starting a topic", () => {
   });
 });
 
+// -- message size --------------------------------------------------------------------------------
+
+describe("message size", () => {
+  it("changes the largest message the topic accepts", async () => {
+    // What is published from here on: a message already in the topic was accepted under the rule in force
+    // when it arrived.
+    gateway.answer("ens", "set-topic-max-message-length", { ern: TOPIC, maxMessageLength: 262144 });
+
+    const result = await ens.setTopicMaxMessageLength(TOPIC, 262144);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, maxMessageLength: 262144 });
+    assert.deepEqual([result.ern, result.maxMessageLength], [TOPIC, 262144]);
+  });
+
+  it("refuses a length that is not positive before the round trip", async () => {
+    // Where a queue takes zero to mean "no limit of my own", a topic has no such notion - and one accepting
+    // nothing is stopTopic said irreversibly.
+    await assert.rejects(() => ens.setTopicMaxMessageLength(TOPIC, 0), /positive number of bytes/);
+    await assert.rejects(() => ens.setTopicMaxMessageLength(TOPIC, -1), /positive number of bytes/);
+
+    assert.deepEqual(gateway.requests.filter((request) => request.action === "set-topic-max-message-length"), []);
+  });
+
+  it("carries the server's reason for a message the topic will not take", async () => {
+    gateway.answer(
+      "ens",
+      "publish-message",
+      { error: "message is 2048 bytes, and this topic accepts 1024 - see set-topic-max-message-length" },
+      400,
+    );
+
+    await assert.rejects(
+      () => ens.publishMessage(TOPIC, "x".repeat(2048)),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.target, error.action, error.status], ["ens", "publish-message", 400]);
+        assert.ok(error.reason.startsWith("message is 2048 bytes"));
+        return true;
+      },
+    );
+  });
+});
+
 // -- retention -----------------------------------------------------------------------------------
 
 describe("retention", () => {
@@ -240,8 +283,19 @@ describe("retention", () => {
     assert.equal(result.retentionPeriod, 0);
   });
 
-  it("refuses a negative period before the round trip", async () => {
-    await assert.rejects(() => ens.setTopicRetention(TOPIC, -1), /cannot be negative/);
+  it("takes minus one to mean keep everything", async () => {
+    // The one negative that means something: the server stores such a message with no expiry at all rather
+    // than with a very distant one, so nothing ever removes it.
+    gateway.answer("ens", "set-topic-retention", { ern: TOPIC, retentionPeriod: -1 });
+
+    const result = await ens.setTopicRetention(TOPIC, RETENTION_FOREVER);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, retentionPeriod: -1 });
+    assert.equal(result.retentionPeriod, RETENTION_FOREVER);
+  });
+
+  it("refuses a period below minus one before the round trip", async () => {
+    await assert.rejects(() => ens.setTopicRetention(TOPIC, -2), /keep messages forever/);
 
     assert.deepEqual(gateway.requests.filter((request) => request.action === "set-topic-retention"), []);
   });

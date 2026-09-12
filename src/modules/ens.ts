@@ -42,6 +42,7 @@ import {
   toTopicMessage,
   toTopicMessageAttribute,
   toTopicMessageCount,
+  toTopicMaxMessageLengthResult,
   toTopicMetadata,
   toTopicRetentionResult,
   toTopicStateResult,
@@ -49,6 +50,7 @@ import {
   type Topic,
   type TopicMessage,
   type TopicMessageAttribute,
+  type TopicMaxMessageLengthResult,
   type TopicMessageCount,
   type TopicMetadata,
   type TopicRetentionResult,
@@ -59,7 +61,7 @@ import type { EuclidSession } from "./eam.js";
 
 export const TARGET = "ens";
 
-/** The largest message a topic accepts, in bytes. */
+/** The largest message a topic accepts, in bytes, unless it is given a limit of its own. */
 export const DEFAULT_MAX_MESSAGE_LENGTH = 1024 * 1024;
 
 /** What a topic's `status` reads as: delivering what is published to it... */
@@ -72,6 +74,15 @@ export const TOPIC_STOPPED = "STOPPED";
  * topic's own - see {@link EuclidEns.setTopicRetention}.
  */
 export const INSTALLATION_RETENTION = 0;
+
+/**
+ * The retention period that keeps every message published to the topic.
+ *
+ * Not a very large number of seconds: the server stores such a message with no expiry at all, which is what
+ * its TTL index ignores, so nothing is ever going to remove it. The topic then grows without limit and only
+ * {@link EuclidEns.purgeTopic} empties it - see {@link EuclidEns.setTopicRetention}.
+ */
+export const RETENTION_FOREVER = -1;
 
 /** What a published message carries besides its body. */
 export interface PublishMessageOptions {
@@ -106,7 +117,12 @@ export class EuclidEns extends ModuleClient {
 
   // -- topics ----------------------------------------------------------------------------------
 
-  /** Creates a topic, and answers with the ERN everything else names it by. */
+  /**
+   * Creates a topic, and answers with the ERN everything else names it by.
+   *
+   * `maxMessageLength` is changeable afterwards with {@link setTopicMaxMessageLength}, and is what a publish
+   * is measured against.
+   */
   async createTopic(name: string, maxMessageLength = DEFAULT_MAX_MESSAGE_LENGTH): Promise<CreateTopicResult> {
     return toCreateTopicResult(await this.call("create-topic", { name, maxMessageLength }));
   }
@@ -177,14 +193,19 @@ export class EuclidEns extends ModuleClient {
    * The change applies to messages published afterwards; the ones already stored keep the expiry they were
    * given, since that is stamped on each message rather than looked up when it is read.
    *
-   * @param retentionPeriod seconds, or {@link INSTALLATION_RETENTION} to follow
-   *   `euclid.modules.ens.retention-period` as it changes rather than freezing a copy of what it says today.
-   * @throws {Error} if the period is negative, which the server refuses anyway - this just says so before the
-   *   round trip.
+   * @param retentionPeriod seconds; {@link INSTALLATION_RETENTION} to follow
+   *   `euclid.modules.ens.retention-period` as it changes rather than freezing a copy of what it says today;
+   *   or {@link RETENTION_FOREVER} to keep every message published to this topic.
+   * @throws {Error} if the period is below {@link RETENTION_FOREVER}, which the server refuses anyway - this
+   *   just says so before the round trip.
    */
   async setTopicRetention(ern: string, retentionPeriod: number): Promise<TopicRetentionResult> {
-    if (retentionPeriod < 0) {
-      throw new Error("retentionPeriod cannot be negative; zero follows the installation default");
+    // -1 is the one negative that means something: keep everything. Anything below it is a typo the server
+    // refuses too, said here so that it costs no round trip.
+    if (retentionPeriod < RETENTION_FOREVER) {
+      throw new Error(
+        "retentionPeriod has to be seconds, 0 to follow the installation default, or -1 to keep messages forever",
+      );
     }
     return toTopicRetentionResult(await this.call("set-topic-retention", { ern, retentionPeriod }));
   }
@@ -219,6 +240,27 @@ export class EuclidEns extends ModuleClient {
     });
   }
 
+  /**
+   * Changes the largest message a topic accepts, in bytes.
+   *
+   * What is published from here on: a message already in the topic was accepted under the rule in force when
+   * it arrived, and lowering the limit is not a reason to go back and lose it.
+   *
+   * Positive only, where {@link import("./eqs.js").EuclidEqs.setQueueMaxMessageLength} also takes zero: a
+   * topic has no notion of "no limit of its own" to set it back to, and a topic that accepted nothing would be
+   * {@link stopTopic} said irreversibly.
+   *
+   * @throws {Error} if the length is not positive, which the server refuses anyway - this just says so before
+   *   the round trip.
+   */
+  async setTopicMaxMessageLength(ern: string, maxMessageLength: number): Promise<TopicMaxMessageLengthResult> {
+    if (maxMessageLength <= 0) {
+      throw new Error("maxMessageLength has to be a positive number of bytes");
+    }
+    const response = await this.call("set-topic-max-message-length", { ern, maxMessageLength });
+    return toTopicMaxMessageLengthResult(response);
+  }
+
   /** Tags a topic. */
   async addTopicTag(ern: string, key: string, value: string): Promise<void> {
     await this.call("add-topic-tag", { ern, key, value });
@@ -242,6 +284,11 @@ export class EuclidEns extends ModuleClient {
    * Every subscription on the topic gets a copy, each on its own queue and each consumed independently:
    * a subscriber that is slow or stopped delays nobody else, and a message already delivered is not
    * withdrawn if the subscription is later removed.
+   *
+   * A body longer than the topic accepts is refused with HTTP 400 saying both figures. What counts is the
+   * body alone, so attributes travel alongside it rather than against the limit;
+   * {@link setTopicMaxMessageLength} is what changes that limit. A notification euclid itself publishes - a
+   * bucket's object event - is not measured against it: there is nobody to answer 400 to.
    */
   async publishMessage(topicErn: string, body: string, options: PublishMessageOptions = {}): Promise<string> {
     const payload: Record<string, unknown> = {

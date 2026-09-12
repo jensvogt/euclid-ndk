@@ -108,7 +108,16 @@ export interface TopicStateResult {
   released: number;
 }
 
-/** A topic's retention period after setting it, in seconds. Zero means the installation's own. */
+/** A topic's message-size limit after setting it, in bytes. Always a positive number here. */
+export interface TopicMaxMessageLengthResult {
+  ern: string;
+  maxMessageLength: number;
+}
+
+/**
+ * A topic's retention period after setting it, in seconds. Zero means the installation's own; -1 means the
+ * topic keeps everything published to it.
+ */
 export interface TopicRetentionResult {
   ern: string;
   retentionPeriod: number;
@@ -194,6 +203,10 @@ export function toTopicStateResult(document: unknown): TopicStateResult {
     status: text(document, "status"),
     released: number(document, "released"),
   };
+}
+
+export function toTopicMaxMessageLengthResult(document: unknown): TopicMaxMessageLengthResult {
+  return { ern: text(document, "ern"), maxMessageLength: number(document, "maxMessageLength") };
 }
 
 export function toTopicRetentionResult(document: unknown): TopicRetentionResult {

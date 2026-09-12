@@ -113,6 +113,7 @@ export type {
   Topic,
   TopicMessage,
   TopicMessageAttribute,
+  TopicMaxMessageLengthResult,
   TopicMessageCount,
   TopicMetadata,
   TopicRetentionResult,
@@ -122,6 +123,8 @@ export type { DeleteSecretResult, Secret, SecretValue } from "./dto/ess.js";
 export type {
   CreateQueueResult,
   Queue,
+  QueueDelayResult,
+  QueueMaxMessageLengthResult,
   QueueMessage,
   QueueMessageAttribute,
   QueueMessageCount,
@@ -220,6 +223,7 @@ export {
 export {
   EuclidEns,
   INSTALLATION_RETENTION,
+  RETENTION_FOREVER,
   TOPIC_RUNNING,
   TOPIC_STOPPED,
   type PublishMessageOptions,
@@ -229,6 +233,8 @@ export {
   DEFAULT_MAX_RETRIES,
   DEFAULT_VISIBILITY,
   EuclidEqs,
+  INSTALLATION_MAX_MESSAGE_LENGTH,
+  MAX_QUEUE_DELAY,
   type CreateQueueOptions,
   type ListQueuesOptions,
   type PurgeAllQueuesOptions,
@@ -258,7 +264,7 @@ export {
 } from "./modules/esm.js";
 
 /** The version this package was published as. */
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 /** Options {@link Euclid.login} passes through to the builder, for the case that needs no builder. */
 export interface LoginOptions {

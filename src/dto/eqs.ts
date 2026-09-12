@@ -136,6 +136,25 @@ export interface QueueMessageMetadata {
   modified: string;
 }
 
+/** A queue's delay after setting it, in seconds. What it holds back is sent from then on, not before. */
+export interface QueueDelayResult {
+  ern: string;
+  delay: number;
+}
+
+/**
+ * A queue's message-size limit after setting it, in bytes.
+ *
+ * Two numbers because zero is a value: `maxMessageLength` is what the queue now holds, and
+ * `effectiveMaxMessageLength` is what a send is actually measured against - the installation's figure when
+ * the queue carries no limit of its own.
+ */
+export interface QueueMaxMessageLengthResult {
+  ern: string;
+  maxMessageLength: number;
+  effectiveMaxMessageLength: number;
+}
+
 /** A queue's status after starting or stopping it, and how many messages are waiting on it. */
 export interface QueueStatusResult {
   ern: string;
@@ -257,6 +276,18 @@ export function toQueueMessageMetadata(document: unknown): QueueMessageMetadata 
     contentType: text(document, "contentType"),
     created: text(document, "created"),
     modified: text(document, "modified"),
+  };
+}
+
+export function toQueueDelayResult(document: unknown): QueueDelayResult {
+  return { ern: text(document, "ern"), delay: number(document, "delay") };
+}
+
+export function toQueueMaxMessageLengthResult(document: unknown): QueueMaxMessageLengthResult {
+  return {
+    ern: text(document, "ern"),
+    maxMessageLength: number(document, "maxMessageLength"),
+    effectiveMaxMessageLength: number(document, "effectiveMaxMessageLength"),
   };
 }
 

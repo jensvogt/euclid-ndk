@@ -25,6 +25,8 @@ import { toPage, type Page } from "../dto/eam.js";
 import {
   toCreateQueueResult,
   toQueue,
+  toQueueDelayResult,
+  toQueueMaxMessageLengthResult,
   toQueueMessage,
   toQueueMessageAttribute,
   toQueueMessageCount,
@@ -34,6 +36,8 @@ import {
   toRedriveDlqResult,
   type CreateQueueResult,
   type Queue,
+  type QueueDelayResult,
+  type QueueMaxMessageLengthResult,
   type QueueMessage,
   type QueueMessageAttribute,
   type QueueMessageCount,
@@ -54,8 +58,26 @@ export const DEFAULT_VISIBILITY = 30;
 /** How many times a message may be received before it goes to the dead letter queue. */
 export const DEFAULT_MAX_RETRIES = 3;
 
-/** The largest message a queue accepts, in bytes. */
+/** The largest message a queue accepts, in bytes, unless it is given a limit of its own. */
 export const DEFAULT_MAX_MESSAGE_LENGTH = 1024 * 1024;
+
+/**
+ * The message-size limit that means "no limit of this queue's own".
+ *
+ * Zero rather than a number of bytes, and not "accept nothing": a send against such a queue is measured
+ * against the installation's figure - {@link DEFAULT_MAX_MESSAGE_LENGTH} - instead, which is what a queue
+ * created before the limit meant anything holds. See {@link EuclidEqs.setQueueMaxMessageLength}.
+ */
+export const INSTALLATION_MAX_MESSAGE_LENGTH = 0;
+
+/**
+ * The longest delay a queue may hold a sent message for, in seconds.
+ *
+ * The bound AWS SQS holds `DelaySeconds` to, and euclid keeps: a delay is for smoothing a burst or letting a
+ * writer finish, not for scheduling - something that has to wait a quarter of an hour wants a timestamp of its
+ * own rather than a queue that holds everything back.
+ */
+export const MAX_QUEUE_DELAY = 900;
 
 /**
  * How long to pause, in milliseconds, before asking again when the server answered a long poll
@@ -86,11 +108,18 @@ export interface CreateQueueOptions {
    * letter queue keeps redelivering.
    */
   maxRetries?: number;
-  /** The largest message this queue accepts, in bytes. */
+  /**
+   * The largest message this queue accepts, in bytes - changeable later with
+   * {@link EuclidEqs.setQueueMaxMessageLength}. {@link INSTALLATION_MAX_MESSAGE_LENGTH} carries no limit of
+   * the queue's own.
+   */
   maxMessageLength?: number;
   /** The name of the queue that failed messages end up on. */
   dlqName?: string;
-  /** How long a sent message waits before it can be received at all, in seconds. */
+  /**
+   * How long a sent message waits before it can be received at all, in seconds, to a maximum of
+   * {@link MAX_QUEUE_DELAY} - changeable later with {@link EuclidEqs.setQueueDelay}.
+   */
   delay?: number;
   /**
    * The priority every message of this queue gets unless a send overrides it -
@@ -256,6 +285,47 @@ export class EuclidEqs extends ModuleClient {
   }
 
   /**
+   * Changes how long a queue holds a sent message back before it can be received, in seconds.
+   *
+   * What is sent from here on, and nothing else: a message already waiting had its delay turned into a
+   * timestamp when it arrived, and moving that now would either release it early or hold back one that was
+   * promised sooner.
+   *
+   * @param delay seconds, from none to {@link MAX_QUEUE_DELAY}.
+   * @throws {Error} if the delay is outside that range, which the server refuses anyway - this just says so
+   *   before the round trip.
+   */
+  async setQueueDelay(ern: string, delay: number): Promise<QueueDelayResult> {
+    if (delay < 0 || delay > MAX_QUEUE_DELAY) {
+      throw new Error(`delay must be between 0 and ${MAX_QUEUE_DELAY} seconds`);
+    }
+    return toQueueDelayResult(await this.call("set-queue-delay", { ern, delay }));
+  }
+
+  /**
+   * Changes the largest message a queue accepts, in bytes.
+   *
+   * What is sent from here on: a message already on the queue was measured against the limit in force when it
+   * arrived, and lowering this is not a reason to go back and reject it. A send that exceeds the limit is
+   * refused with HTTP 400 - see {@link sendMessage} for what exactly is measured.
+   *
+   * @param maxMessageLength bytes, or {@link INSTALLATION_MAX_MESSAGE_LENGTH} to carry no limit of this
+   *   queue's own and be measured against the installation's figure instead. The result says which of the two
+   *   a send will actually be held to.
+   * @throws {Error} if the length is negative, which the server refuses anyway - this just says so before the
+   *   round trip.
+   */
+  async setQueueMaxMessageLength(ern: string, maxMessageLength: number): Promise<QueueMaxMessageLengthResult> {
+    if (maxMessageLength < 0) {
+      throw new Error(
+        `maxMessageLength cannot be negative; zero follows the installation default of ${DEFAULT_MAX_MESSAGE_LENGTH} bytes`,
+      );
+    }
+    const response = await this.call("set-queue-max-message-length", { ern, maxMessageLength });
+    return toQueueMaxMessageLengthResult(response);
+  }
+
+  /**
    * Moves messages out of a dead letter queue and back onto the queues they came from.
    *
    * `ern` has to name a queue that some other queue points at as its dead letter queue; an ordinary
@@ -298,6 +368,10 @@ export class EuclidEqs extends ModuleClient {
    * The envelope and the priority are left out of the request entirely when there is nothing to say
    * about them, so the queue's own defaults are what apply rather than an empty string the server would
    * have to interpret.
+   *
+   * A body longer than the queue accepts is refused with HTTP 400 saying both figures. What counts is the
+   * body alone - the same number `size` reports - so attributes travel alongside it rather than against the
+   * limit; {@link setQueueMaxMessageLength} is what changes that limit.
    */
   async sendMessage(queueErn: string, body: string, options: SendMessageOptions = {}): Promise<string> {
     const payload: Record<string, unknown> = {

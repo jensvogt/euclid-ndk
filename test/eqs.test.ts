@@ -14,7 +14,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-import { Euclid, PRIORITY_HIGH, type EuclidEqs, type EuclidSession } from "../src/index.js";
+import {
+  Euclid,
+  INSTALLATION_MAX_MESSAGE_LENGTH,
+  MAX_QUEUE_DELAY,
+  PRIORITY_HIGH,
+  type EuclidEqs,
+  type EuclidSession,
+} from "../src/index.js";
 import { EuclidServiceError } from "../src/errors.js";
 import { FakeGateway, prepareLogin } from "./fake-gateway.js";
 import { FakeQueues, queueErn } from "./fake-queues.js";
@@ -170,6 +177,60 @@ describe("queues", () => {
     assert.deepEqual(gateway.last().json(), { ern: QUEUE, visibility: 120 });
   });
 
+  it("changes how long a sent message is held back", async () => {
+    // What is sent from here on: a message already waiting had its delay turned into a timestamp when it
+    // arrived, and moving that would release it early or hold back one promised sooner.
+    gateway.answer("eqs", "set-queue-delay", { ern: QUEUE, delay: 30 });
+
+    const result = await eqs.setQueueDelay(QUEUE, 30);
+
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, delay: 30 });
+    assert.deepEqual([result.ern, result.delay], [QUEUE, 30]);
+  });
+
+  it("refuses a delay outside the bound before the round trip", async () => {
+    // A quarter of an hour is the bound SQS holds DelaySeconds to: a delay smooths a burst, it does not
+    // schedule.
+    await assert.rejects(() => eqs.setQueueDelay(QUEUE, -1), /between 0 and 900/);
+    await assert.rejects(() => eqs.setQueueDelay(QUEUE, MAX_QUEUE_DELAY + 1), /between 0 and 900/);
+
+    assert.deepEqual(requestsFor("set-queue-delay"), []);
+  });
+
+  it("changes the largest message the queue accepts, and says what a send is measured against", async () => {
+    gateway.answer("eqs", "set-queue-max-message-length", {
+      ern: QUEUE,
+      maxMessageLength: 262144,
+      effectiveMaxMessageLength: 262144,
+    });
+
+    const result = await eqs.setQueueMaxMessageLength(QUEUE, 262144);
+
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, maxMessageLength: 262144 });
+    assert.deepEqual([result.maxMessageLength, result.effectiveMaxMessageLength], [262144, 262144]);
+  });
+
+  it("takes zero to mean no limit of the queue's own", async () => {
+    // Not "accept nothing": such a queue is measured against the installation's figure instead, which is what
+    // the second number in the answer is for.
+    gateway.answer("eqs", "set-queue-max-message-length", {
+      ern: QUEUE,
+      maxMessageLength: 0,
+      effectiveMaxMessageLength: 1048576,
+    });
+
+    const result = await eqs.setQueueMaxMessageLength(QUEUE, INSTALLATION_MAX_MESSAGE_LENGTH);
+
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, maxMessageLength: 0 });
+    assert.deepEqual([result.maxMessageLength, result.effectiveMaxMessageLength], [0, 1048576]);
+  });
+
+  it("refuses a negative message length before the round trip", async () => {
+    await assert.rejects(() => eqs.setQueueMaxMessageLength(QUEUE, -1), /cannot be negative/);
+
+    assert.deepEqual(requestsFor("set-queue-max-message-length"), []);
+  });
+
   it("purges every namespace of the session's own account unless told otherwise", async () => {
     // An empty namespace is what the server reads as "all of them", and this call has emptied the account
     // since it existed - so narrowing it by default would quietly spare queues a caller meant to purge.
@@ -264,6 +325,21 @@ describe("messages", () => {
       priority: { type: "string", value: "LOW" },
       origin: { type: "string", value: "esm" },
     });
+  });
+
+  it("carries the server's reason for a message the queue will not take", async () => {
+    // Measured on the body alone - the same number `size` reports - so attributes travel alongside it rather
+    // than against the limit.
+    gateway.answer("eqs", "send-message", { error: "message is 2048 bytes, and this queue accepts 1024" }, 400);
+
+    await assert.rejects(
+      () => eqs.sendMessage(QUEUE, "x".repeat(2048)),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.target, error.action, error.status], ["eqs", "send-message", 400]);
+        assert.ok(error.reason.startsWith("message is 2048 bytes"));
+        return true;
+      },
+    );
   });
 
   it("says nothing about what it has nothing to say about", async () => {

@@ -308,6 +308,7 @@ checks `listSubscriptions` first.
 | `createQueue`, `listQueues`, `getQueueErn`, `getQueueMetadata`, `purgeQueue`, `purgeAllQueues`, `deleteQueue` | queues |
 | `addQueueTag`, `setQueueTag`, `deleteQueueTag` | queue tags |
 | `stopQueue`, `startQueue`, `setQueueVisibility` | what a queue hands out, and for how long |
+| `setQueueDelay`, `setQueueMaxMessageLength` | how long a send is held back, and how large it may be |
 | `sendMessage`, `receiveMessages`, `receiveAllMessages`, `deleteMessage`, `deleteMessageById` | messages |
 | `listMessages`, `getMessageCount`, `getMessageMetadata` | inspecting a queue without consuming it |
 | `getMessageAttribute`, `setMessageAttribute`, `setMessageVisibility` | one message at a time |
@@ -346,6 +347,35 @@ the client's:
   on the clock; the client then pauses briefly and asks again for what is left of the window, rather
   than hammering a server that is already short of threads.
 
+### Delay and message size
+
+Three things about a queue are changeable while it is in service, and all three apply to what happens next
+rather than to what is already on it:
+
+```ts
+import { INSTALLATION_MAX_MESSAGE_LENGTH, MAX_QUEUE_DELAY } from "euclid-ndk";
+
+await eqs.setQueueVisibility(queue.ern, 120);        // the lease new receives get
+await eqs.setQueueDelay(queue.ern, 30);             // how long a send waits to become receivable
+await eqs.setQueueMaxMessageLength(queue.ern, 262144);
+```
+
+A message already waiting had its delay turned into a timestamp when it arrived, so changing the delay neither
+releases it early nor holds back one promised sooner; a message already on the queue was measured against the
+limit in force when it arrived, so lowering the limit does not go back and reject it; and a lease already
+handed out keeps the window it was given. The delay runs from none to `MAX_QUEUE_DELAY` (900 seconds, the bound
+SQS holds `DelaySeconds` to) and a value outside that is refused here before the round trip.
+
+`sendMessage` now refuses a body the queue will not take with HTTP 400 saying both figures. What is measured is
+the **body alone** - the same number a message's `size` reports - so attributes travel alongside it rather than
+against the limit.
+
+`setQueueMaxMessageLength` answers with two numbers, because zero is a value: `maxMessageLength` is what the
+queue now holds and `effectiveMaxMessageLength` is what a send is actually measured against.
+`INSTALLATION_MAX_MESSAGE_LENGTH` (zero) means the queue carries no limit of its own - which is what a queue
+created before the limit meant anything holds - and is measured against the installation's 1 MiB instead. It
+does not mean "accept nothing".
+
 `asInternal()` marks a client's requests as euclid's own traffic. The same `get-message-count` is a
 user's question one moment and a metric collector's poll the next, and only the caller knows which, so
 instrumentation says so rather than leaving the server to guess from a rate.
@@ -359,7 +389,7 @@ instrumentation says so rather than leaving the server to guess from a rate.
 | `createTopic`, `listTopics`, `getTopicErn`, `getTopicMetadata`, `purgeTopic`, `purgeAllTopics`, `deleteTopic` | topics |
 | `addTopicTag`, `setTopicTag`, `deleteTopicTag` | topic tags |
 | `stopTopic`, `startTopic` | holding delivery, and handing over what was held |
-| `setTopicRetention` | how long a published message is kept at all |
+| `setTopicRetention`, `setTopicMaxMessageLength` | how long a published message is kept, and how large it may be |
 | `publishMessage`, `listMessages`, `getMessageCount` | messages |
 | `getMessageAttribute`, `setMessageAttribute` | one published message at a time |
 | `subscribe`, `listSubscriptions`, `unsubscribe` | delivery onward to a queue |
@@ -412,17 +442,32 @@ without a retention period the collection only grows, and because every topic sh
 paid for by every publish in the installation. `setTopicRetention` is what bounds that:
 
 ```ts
-import { INSTALLATION_RETENTION } from "euclid-ndk";
+import { INSTALLATION_RETENTION, RETENTION_FOREVER } from "euclid-ndk";
 
-await ens.setTopicRetention(topic.ern, 7 * 24 * 60 * 60);     // seconds: keep a week
+await ens.setTopicRetention(topic.ern, 7 * 24 * 60 * 60);       // seconds: keep a week
 await ens.setTopicRetention(topic.ern, INSTALLATION_RETENTION); // or follow the installation's own
+await ens.setTopicRetention(topic.ern, RETENTION_FOREVER);      // or keep everything
 ```
 
 `INSTALLATION_RETENTION` (zero) means this topic has never been told what it wants and follows
-`euclid.modules.ens.retention-period` as that changes, rather than freezing a copy of what it says today. A
-negative period is refused here before the round trip, as the server would refuse it anyway. The change
-applies to messages published afterwards: the expiry is stamped on each message when it is stored and
-enforced by a TTL index, so the ones already there keep the expiry they were given.
+`euclid.modules.ens.retention-period` as that changes, rather than freezing a copy of what it says today.
+`RETENTION_FOREVER` (-1) is not a very long period but the absence of one: the server stores such a message
+with no expiry at all, which is exactly what its TTL index ignores, so nothing ever removes it — the topic
+then grows without limit and only `purgeTopic` empties it. A period below -1 is refused here before the round
+trip, as the server would refuse it anyway. The change applies to messages published afterwards: the expiry is
+stamped on each message when it is stored and enforced by a TTL index, so the ones already there keep the
+expiry they were given.
+
+### Message size
+
+`setTopicMaxMessageLength` changes the largest message a topic accepts, and `publishMessage` refuses a longer
+body with HTTP 400 saying both figures. As in EQS it is the **body alone** that counts, so attributes travel
+alongside it; unlike EQS the length has to be positive, since a topic has no "no limit of my own" to be set
+back to and one accepting nothing would be `stopTopic` said irreversibly. A notification euclid publishes
+itself - a bucket's object event - is not measured against it, because there is nobody to answer 400 to.
+
+Like retention, it governs what is published from here on: a message already in the topic was accepted under
+the rule in force when it arrived, and lowering the limit is not a reason to go back and lose it.
 
 One wire asymmetry is reproduced rather than papered over: an attribute's name travels as `name` in
 most of EQS and as `key` throughout ENS, so a request this SDK builds matches what euclid-cli and
