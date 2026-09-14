@@ -206,6 +206,34 @@ describe("stopping and starting a topic", () => {
     assert.deepEqual([started.status, started.released], [TOPIC_RUNNING, 0]);
   });
 
+  it("hands what the topic still holds to its subscribers again", async () => {
+    // The way back to what a topic keeps for its retention period, for a subscriber that was down or
+    // subscribed after the fact - the fan-out happened once and the queue message is long consumed.
+    gateway.answer("ens", "resend-messages", { ern: TOPIC, resent: 42, held: 0 });
+
+    const result = await ens.resendMessages(TOPIC);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, messageId: "" });
+    assert.deepEqual([result.ern, result.resent, result.held], [TOPIC, 42, 0]);
+  });
+
+  it("resends one message, which is what a busy topic wants", async () => {
+    // A resend goes to every subscriber, so replaying one message is usually the right blast radius.
+    gateway.answer("ens", "resend-messages", { ern: TOPIC, resent: 1, held: 0 });
+
+    assert.equal((await ens.resendMessages(TOPIC, "m-7")).resent, 1);
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, messageId: "m-7" });
+  });
+
+  it("reports what a resend passed over as held", async () => {
+    // Held messages have never been delivered at all - startTopic releases those, not this.
+    gateway.answer("ens", "resend-messages", { ern: TOPIC, resent: 0, held: 12 });
+
+    const result = await ens.resendMessages(TOPIC);
+
+    assert.deepEqual([result.resent, result.held], [0, 12]);
+  });
+
   it("carries the server's reason for a topic that is not there", async () => {
     gateway.answer("ens", "stop-topic", { error: `Topic not found, ern: ${TOPIC}` }, 404);
 

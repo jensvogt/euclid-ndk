@@ -120,8 +120,40 @@ describe("buckets", () => {
     assert.equal(await esm.getBucketErn("reports"), BUCKET);
     assert.deepEqual(gateway.last().json(), { name: "reports" });
     assert.equal(await esm.getBucketSize(BUCKET), 4096);
-    assert.equal(await esm.getObjectCount(BUCKET, "2026/"), 12);
-    assert.deepEqual(gateway.last().json(), { ern: BUCKET, prefix: "2026/" });
+    assert.equal(await esm.getObjectCount(BUCKET), 12);
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET });
+  });
+
+  it("counts for real, which is a different question from the stored total", async () => {
+    // The two were one call until euclid 1.0.73, which took a prefix and ignored it - so a caller
+    // asking about part of a bucket was quietly given the whole bucket's figure.
+    gateway.answer("esm", "count-objects", {
+      ern: BUCKET,
+      prefix: "2026/",
+      includeDirectories: false,
+      count: 12,
+    });
+
+    assert.equal(await esm.countObjects(BUCKET, { prefix: "2026/" }), 12);
+    assert.deepEqual(gateway.last().json(), {
+      ern: BUCKET,
+      prefix: "2026/",
+      includeDirectories: false,
+    });
+
+    gateway.answer("esm", "count-objects", {
+      ern: BUCKET,
+      prefix: "",
+      includeDirectories: true,
+      count: 15,
+    });
+
+    assert.equal(await esm.countObjects(BUCKET, { includeDirectories: true }), 15);
+    assert.deepEqual(gateway.last().json(), {
+      ern: BUCKET,
+      prefix: "",
+      includeDirectories: true,
+    });
   });
 
   it("tags, renames, purges and flags them", async () => {

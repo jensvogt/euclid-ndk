@@ -122,6 +122,18 @@ export interface ListObjectsOptions extends ListOptions {
   includeDirectories?: boolean;
 }
 
+/** What to narrow a count to. Naming neither counts the whole bucket, markers excluded. */
+export interface CountObjectsOptions {
+  /** Only count objects whose key starts with this. Matched literally, not as a glob. */
+  prefix?: string;
+
+  /**
+   * Count the zero-byte markers that stand for directories too. Off by default, which matches what
+   * a listing shows and what the bucket's own stored figure counts.
+   */
+  includeDirectories?: boolean;
+}
+
 /**
  * The two attribute maps a write carries, and they are not the same one.
  *
@@ -335,11 +347,43 @@ export class EuclidEsm extends ModuleClient {
   }
 
   /**
-   * How many objects a bucket holds. Cheaper than listing them when only the number matters - the
-   * server counts rather than paging every object back to the caller.
+   * The bucket's stored object count, without counting.
+   *
+   * That figure is a running total, moved as objects are written and removed rather than counted on
+   * demand, so this costs one document read whatever the bucket holds. It is always the whole
+   * bucket, and only as current as the last time euclid's monitoring module recomputed it. Use
+   * {@link countObjects} when the answer has to be exact, or has to be about part of a bucket.
+   *
+   * This took a `prefix` until euclid 1.0.73 and the server ignored it, answering the whole
+   * bucket's figure regardless. The parameter is gone rather than fixed, because the stored total
+   * is a property of the bucket and there is no per-prefix one to read.
    */
-  async getObjectCount(bucketErn: string, prefix = ""): Promise<number> {
-    return this.numberOf("get-object-count", { ern: bucketErn, prefix }, "count");
+  async getObjectCount(bucketErn: string): Promise<number> {
+    return this.numberOf("get-object-count", { ern: bucketErn }, "count");
+  }
+
+  /**
+   * Counts a bucket's objects, exactly, optionally under a prefix.
+   *
+   * This runs a query, so the figure is right at the moment of asking and costs what counting a
+   * bucket's objects costs - on a bucket of a million, not nothing. {@link getObjectCount} reads
+   * the stored running total instead. Ask this one when the answer has to be right or has to be
+   * about part of a bucket, and that one when it has to be cheap or is being polled.
+   *
+   * `prefix` is matched literally rather than as a glob; a bucket has "directories" only in the
+   * sense that keys share a prefix. `includeDirectories` counts the zero-byte markers that stand
+   * for them, which a listing and the bucket's own stored figure both leave out.
+   */
+  async countObjects(bucketErn: string, options: CountObjectsOptions = {}): Promise<number> {
+    return this.numberOf(
+      "count-objects",
+      {
+        ern: bucketErn,
+        prefix: options.prefix ?? "",
+        includeDirectories: options.includeDirectories ?? false,
+      },
+      "count",
+    );
   }
 
   /** Deletes one object, by its own ERN. */

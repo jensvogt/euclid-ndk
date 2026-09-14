@@ -145,7 +145,7 @@ export interface SendMessageOptions {
    * what it received rather than what it happens to know.
    */
   systemAttributes?: Record<string, VariantInput>;
-  /** `LOW`, `MIDDLE` or `HIGH`; left empty, the message takes the queue's own default. */
+  /** `LOW`, `MEDIUM` or `HIGH`; left empty, the message takes the queue's own default. */
   priority?: string;
 }
 

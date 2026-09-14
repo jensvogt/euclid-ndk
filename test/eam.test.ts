@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { RFC9421 } from "../src/index.js";
 import { save } from "../src/credentials.js";
 import { Euclid } from "../src/index.js";
-import { AUTH_BEARER, AUTH_SIGNATURE } from "../src/index.js";
+import { AUTH_BEARER, AUTH_SIGNATURE, ROLE_OPERATOR } from "../src/index.js";
 import { EuclidAuthenticationError, EuclidServiceError } from "../src/errors.js";
 import { ACCESS_KEY_ID, FakeGateway, prepareLogin, token, type RecordedRequest } from "./fake-gateway.js";
 
@@ -264,9 +264,6 @@ describe("operations", () => {
           accountId: "000000000000",
           region: "eu-central-1",
           created: "2026-01-01",
-          accountGrants: [
-            { accountId: "000000000000", namespaces: ["development"], isAdmin: true, granted: "2026-01-01" },
-          ],
         },
         { userId: "alice" },
       ],
@@ -285,11 +282,8 @@ describe("operations", () => {
     });
     assert.equal(result.total, 2);
     assert.deepEqual(result.items.map((user) => user.userId), ["jens", "alice"]);
-    assert.deepEqual(result.items[0]?.accountGrants[0]?.namespaces, ["development"]);
-    assert.equal(result.items[0]?.accountGrants[0]?.isAdmin, true);
     // A field the server did not send reads as empty rather than throwing.
     assert.equal(result.items[1]?.email, "");
-    assert.deepEqual(result.items[1]?.accountGrants, []);
   });
 
   it("round-trips accounts, groups and namespaces", async () => {
@@ -442,5 +436,198 @@ describe("call", () => {
 
     assert.deepEqual(gateway.last().json(), { x: 1 });
     assert.equal(gateway.last().auth, "sigv4");
+  });
+});
+
+// -- roles and grants ----------------------------------------------------------------------------
+//
+// What a user may do used to arrive on the user, as an `accountGrants` array. It is its own record
+// now, so the SDK asks for it separately - and the call that grants one says what the principal may
+// do as well as where, which `grantNamespaceAccess` never did.
+
+describe("roles", () => {
+  const ROLE = {
+    name: "reporting",
+    ern: "ern:eam:role/reporting",
+    accountId: "000000000000",
+    region: "eu-central-1",
+    description: "reads the reports bucket",
+    permissions: ["esm:list-objects", "esm:get-object"],
+    builtin: false,
+    created: "2026-01-01",
+    modified: "2026-01-01",
+  };
+
+  it("defines a role of the account's own", async () => {
+    prepared();
+    gateway.answer("eam", "create-role", { role: ROLE });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const role = await session.createRole("reporting", ROLE.permissions, "reads the reports bucket");
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), {
+      name: "reporting",
+      description: "reads the reports bucket",
+      permissions: ["esm:list-objects", "esm:get-object"],
+    });
+    assert.deepEqual([role.name, role.builtin], ["reporting", false]);
+    assert.deepEqual(role.permissions, ["esm:list-objects", "esm:get-object"]);
+  });
+
+  it("replaces the permission list on an update rather than adding to it", async () => {
+    prepared();
+    gateway.answer("eam", "update-role", { role: { ...ROLE, permissions: ["esm:*"] } });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const role = await session.updateRole("reporting", ["esm:*"]);
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), { name: "reporting", description: "", permissions: ["esm:*"] });
+    assert.deepEqual(role.permissions, ["esm:*"]);
+  });
+
+  it("refuses a role with no permissions before the round trip", async () => {
+    // A role that grants nothing is a name that looks like access and is not, which the server refuses too.
+    prepared();
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await assert.rejects(() => session.createRole("empty", []), /at least one/);
+    await assert.rejects(() => session.updateRole("empty", []), /at least one/);
+    session.close();
+
+    assert.deepEqual(gateway.requests.filter((request) => request.action.endsWith("-role")), []);
+  });
+
+  it("reads one back, and lists the account's own without euclid's", async () => {
+    prepared();
+    gateway.answer("eam", "get-role", { role: ROLE });
+    gateway.answer("eam", "list-roles", {
+      total: 2,
+      roles: [ROLE, { name: "operator", builtin: true, description: "everything but the destructive actions" }],
+    });
+    gateway.answer("eam", "delete-role", {});
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+
+    assert.equal((await session.getRole("reporting")).description, "reads the reports bucket");
+    assert.deepEqual(gateway.last().json(), { name: "reporting" });
+
+    const listed = await session.listRoles({ pageSize: 25, includeBuiltin: true });
+    assert.deepEqual(gateway.last().json(), {
+      prefix: "",
+      pageSize: 25,
+      pageIndex: 0,
+      sortColumn: "name",
+      sortDirection: "asc",
+      includeBuiltin: true,
+    });
+    assert.equal(listed.total, 2);
+    assert.deepEqual(listed.items.map((role) => role.name), ["reporting", "operator"]);
+    // Which roles a caller may change: euclid's own are computed rather than stored.
+    assert.deepEqual(listed.items.map((role) => role.builtin), [false, true]);
+    // A field the server did not send reads as empty rather than throwing.
+    assert.deepEqual(listed.items[1]?.permissions, []);
+
+    await session.deleteRole("reporting");
+    assert.deepEqual(gateway.last().json(), { name: "reporting" });
+    session.close();
+  });
+
+  it("leaves the built-in roles to the server to refuse", async () => {
+    prepared();
+    gateway.answer("eam", "create-role", { error: "'operator' is a built-in role and cannot be redefined" }, 409);
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await assert.rejects(
+      () => session.createRole(ROLE_OPERATOR, ["esm:*"]),
+      (error: EuclidServiceError) => {
+        assert.equal(error.status, 409);
+        assert.ok(error.reason.includes("built-in role"));
+        return true;
+      },
+    );
+    session.close();
+  });
+});
+
+describe("roles and grants", () => {
+  it("answers a grant with the id that revokes it", async () => {
+    prepared();
+    gateway.answer("eam", "grant-role", {
+      grant: { grantId: "g-1", role: "operator", principal: "ern:...:user/jens", namespaces: ["production"] },
+    });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const grant = await session.grantRole("operator", "ern:...:user/jens", { namespaces: ["production"] });
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), {
+      role: "operator",
+      principal: "ern:...:user/jens",
+      accountId: "",
+      namespaces: ["production"],
+      resources: ["*"],
+    });
+    assert.equal(grant.grantId, "g-1");
+    assert.deepEqual(grant.namespaces, ["production"]);
+  });
+
+  it("grants everywhere and on everything unless told otherwise", async () => {
+    prepared();
+    gateway.answer("eam", "grant-role", { grant: { grantId: "g-2" } });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await session.grantRole("reader", "ern:...:usergroup/auditors");
+    session.close();
+
+    assert.deepEqual(gateway.last().json()["namespaces"], ["*"]);
+    assert.deepEqual(gateway.last().json()["resources"], ["*"]);
+  });
+
+  it("revokes by the grant's own id", async () => {
+    prepared();
+    gateway.answer("eam", "revoke-role", {});
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await session.revokeRole("g-1");
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), { grantId: "g-1" });
+  });
+
+  // The third question - what is granted here at all - which one request per user would otherwise
+  // cost.
+  it("asks for the whole account when given neither principal nor role", async () => {
+    prepared();
+    gateway.answer("eam", "list-grants", {
+      grants: [{ grantId: "g-1", role: "operator", principal: "ern:...:user/jens", namespaces: ["production"] }],
+      total: 1,
+    });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const result = await session.listGrants();
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), { principal: "", role: "", accountId: "" });
+    assert.equal(result.total, 1);
+    assert.equal(result.items[0]?.role, "operator");
+    assert.equal(result.items[0]?.grantId, "g-1");
+  });
+
+  it("says why a permission check answered the way it did", async () => {
+    prepared();
+    gateway.answer("eam", "check-permission", {
+      allowed: false,
+      reason: "no role granted here holds 'ens:publish-message'",
+      role: "",
+    });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const answer = await session.checkPermission("order-service", "ens", "publish-message", { namespace: "production" });
+    session.close();
+
+    assert.equal(answer.allowed, false);
+    assert.match(answer.reason, /ens:publish-message/);
   });
 });

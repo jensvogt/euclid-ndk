@@ -18,7 +18,7 @@ import { object, text } from "./json.js";
  * system attribute of a stored object all mean the same thing by it.
  */
 export const PRIORITY_LOW = "LOW";
-export const PRIORITY_MIDDLE = "MIDDLE";
+export const PRIORITY_MEDIUM = "MEDIUM";
 export const PRIORITY_HIGH = "HIGH";
 
 /**

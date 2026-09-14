@@ -44,11 +44,20 @@ try {
     `signing as ${session.accessKeyId || "(no access key - using the bearer token)"} over ${session.authority}`,
   );
 
+  // What a user may do no longer hangs off the user: it is the grants held by them and by the groups they
+  // are in, so the account's grants are read once here and matched up by principal ERN.
+  const grants = await session.listGrants();
+  const rolesOf = (ern) =>
+    grants.items.filter((grant) => grant.principal === ern).map((grant) => `${grant.role}@${grant.namespaces}`);
+
   const users = await session.listUsers({ pageSize: 5 });
   console.log(`\n${users.total} user(s); first ${users.items.length}:`);
   for (const user of users.items) {
-    const namespaces = user.accountGrants.flatMap((grant) => grant.namespaces);
-    console.log(`  ${user.userId.padEnd(16)} ${user.email.padEnd(28)} namespaces=${JSON.stringify(namespaces)}`);
+    const held = rolesOf(user.ern);
+    console.log(
+      `  ${user.userId.padEnd(16)} ${user.email.padEnd(28)} ` +
+        `${held.length > 0 ? held.join(", ") : "(no grants of their own)"}`,
+    );
   }
 
   // The secret comes back here and nowhere else, so anything that needs it has to keep it.

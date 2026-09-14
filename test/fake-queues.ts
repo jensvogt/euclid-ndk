@@ -74,7 +74,7 @@ export class FakeQueues {
       queueErn: ern,
       messageId: `message-${this.#sent}`,
       status: "AVAILABLE",
-      priority: body["priority"] ?? "MIDDLE",
+      priority: body["priority"] ?? "MEDIUM",
       body: body["body"] ?? "",
       receiptHandle: "",
       size: String(body["body"] ?? "").length,

@@ -2,10 +2,10 @@
 
 Node.js client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
-Nine modules so far. EAM - euclid's access management module - is where a login comes from; ESM
-(storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS
-(secrets) and EAG (the API gateway) are reached from the session it hands back. The remaining modules
-(EES, ETS) speak the same protocol over the same client and will follow.
+Ten modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
+EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets), EAG (the
+API gateway) and ETS (FTP and SFTP servers) are reached from the session it hands back. EES is the one
+module still to come, and speaks the same protocol over the same client.
 
 Requires Node 20 or newer, and **has no dependencies**. Installing this SDK does not bring a TLS
 stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and the
@@ -68,7 +68,7 @@ const { total, items } = await session.listAccounts({ pageSize: 5 });
 ```
 
 The other modules hang off that session - `session.esm()`, `session.eqs()`, `session.ens()`,
-`session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()` - and each answers
+`session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()` - and each answers
 with the same client every time, so asking for one inside a loop costs one connection rather than one
 per iteration:
 
@@ -202,13 +202,52 @@ credentials file; the retry then has a fresh token to use.
 | `createAccessKey`, `listAccessKeys`, `deleteAccessKey` | the caller's own signing credentials |
 | `createUserGroup`, `listUserGroups`, `deleteUserGroup`, `addUserToUserGroup`, `removeUserFromUserGroup` | groups |
 | `createAccount`, `listAccounts`, `deleteAccount` | accounts |
-| `createNamespace`, `listNamespaces`, `deleteNamespace`, `grantNamespaceAccess`, `revokeNamespaceAccess` | namespaces |
+| `createNamespace`, `listNamespaces`, `deleteNamespace` | namespaces |
+| `createRole`, `updateRole`, `getRole`, `listRoles`, `deleteRole` | what a role of this account carries |
+| `grantRole`, `revokeRole`, `listGrants` | who may do what, and where |
+| `checkPermission`, `listPermissions` | why a call was allowed or refused, and what can be granted at all |
 | `changeNamespace` | which namespace this session is scoped to |
 | `metrics` | EAM's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
 Several of these are administrator-only server-side; `session.isAdmin` says whether the logged-in
 user is one, though the server enforces it regardless.
+
+### Roles and grants
+
+Access is a role granted to a principal, scoped. A **role** is a named set of permissions belonging to one
+account; a **grant** gives that role to a user or a user group, in some namespaces and over some resources.
+What a user may do is the union of the grants held by them and by every group they are in.
+
+```ts
+import { EVERY_PERMISSION, ROLE_OPERATOR } from "euclid-ndk";
+
+await session.createRole("reporting", ["esm:list-objects", "esm:get-object"], "reads the reports bucket");
+const grant = await session.grantRole("reporting", userErn, { namespaces: ["production"] });
+// ... and to take it away again:
+await session.revokeRole(grant.grantId);
+```
+
+A permission is `<module>:<action>` - `esm:put-object` - with `<module>:*` for one module's lot and
+`EVERY_PERMISSION` (`*:*`) for everything a role can reach, which is still not installation administration.
+`listPermissions` is the vocabulary the server actually answers, and a permission outside it is refused
+naming the one it did not know. A role with no permissions is refused here before the round trip.
+
+Seven roles are euclid's own - `ROLE_ACCOUNT_ADMINISTRATOR`, `ROLE_OPERATOR`, `ROLE_READER`,
+`ROLE_PUBLISHER`, `ROLE_CONSUMER`, `ROLE_APPLICATION`, `ROLE_TRANSFER` - computed rather than stored, so they
+can be granted in any account, stay current as modules gain actions, and cannot be changed or deleted.
+`listRoles` leaves them out unless `includeBuiltin` asks, since they are the same everywhere; a role's
+`builtin` flag says which kind it is. `updateRole` replaces the permission list rather than adding to it.
+
+A grant is revoked by its own `grantId`, not by the (role, principal) pair: the same role can be granted to
+the same principal twice with different scope, and revoking has to say which. Deleting a role while anybody
+still holds it is refused - the grants go first.
+
+**This replaced the old namespace grants.** `grantNamespaceAccess` and `revokeNamespaceAccess` are gone from
+the server, and with them from this SDK: access to a namespace is now a role granted in it, so one call says
+what a principal may do there as well as where. `session.isAdmin` is unchanged - installation administration
+is membership of the `administrator` user group rather than a role, because roles are per account and an
+installation administrator is by definition not.
 
 ## What ESM covers
 
@@ -222,7 +261,8 @@ calls scopes the second one.
 | `addBucketTag`, `setBucketTag`, `deleteBucketTag` | bucket tags |
 | `enableEncryption`, `disableEncryption` | encryption at rest, under an EKM key |
 | `setBucketInternal` | whether a bucket is euclid's own plumbing, and so left out of a listing |
-| `listObjects`, `getObjectCount`, `copyObject`, `moveObject`, `renameObject`, `deleteObject`, `deleteObjects` | objects |
+| `listObjects`, `copyObject`, `moveObject`, `renameObject`, `deleteObject`, `deleteObjects` | objects |
+| `countObjects`, `getObjectCount` | how many there are: counted exactly, or the bucket's stored running total |
 | `touchObject` | re-announce objects already stored, for a listener that missed their events |
 | `addObjectAttribute`, `setObjectAttribute`, `listObjectAttributes`, `deleteObjectAttribute` | user-defined attributes |
 | `subscribe`, `listSubscriptions`, `unsubscribe`, `parseBucketEvent` | a bucket's events, into a queue or a topic |
@@ -389,6 +429,7 @@ instrumentation says so rather than leaving the server to guess from a rate.
 | `createTopic`, `listTopics`, `getTopicErn`, `getTopicMetadata`, `purgeTopic`, `purgeAllTopics`, `deleteTopic` | topics |
 | `addTopicTag`, `setTopicTag`, `deleteTopicTag` | topic tags |
 | `stopTopic`, `startTopic` | holding delivery, and handing over what was held |
+| `resendMessages` | handing what the topic still holds to its subscribers again |
 | `setTopicRetention`, `setTopicMaxMessageLength` | how long a published message is kept, and how large it may be |
 | `publishMessage`, `listMessages`, `getMessageCount` | messages |
 | `getMessageAttribute`, `setMessageAttribute` | one published message at a time |
@@ -680,6 +721,48 @@ bound at all. A listener whose port was taken, or whose certificate could not be
 it is the one somebody is looking for. An HTTPS listener's certificate arrives flat, as a dozen
 `certificate*` fields, and is gathered back into one `certificate` object here; it is `null` for a plain
 HTTP listener and for an HTTPS one the server found none for.
+
+## What ETS covers
+
+`session.ets()` answers with the transfer client. Every action is administrator-only server-side.
+
+| Method | Action |
+| --- | --- |
+| `createServer`, `updateServer`, `getServer`, `listServers`, `deleteServer` | transfer servers |
+| `startServer`, `stopServer` | putting one in service, and taking it out |
+| `metrics` | ETS's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+A transfer server is an FTP or SFTP listener in front of a bucket: what a client uploads becomes an object,
+and what is in the bucket is what a client lists. A partner who will only ever send files by SFTP needs no
+euclid client, and what they send arrives where the rest of euclid can reach it - a bucket subscription
+fires, an application consumes it, the usual machinery.
+
+```ts
+import { PROTOCOL_SFTP } from "euclid-ndk";
+
+const ets = session.ets();
+await ets.createServer("drop-box", "incoming", 2222, {
+  protocol: PROTOCOL_SFTP,          // or PROTOCOL_FTP
+  userIds: ["jens"],                 // and/or userGroups, who may log in
+  homeDirectory: "partners/acme",   // the key prefix a session starts in
+  directories: ["inbox", "outbox"], // what a client sees whether or not anything is stored there
+});
+await ets.startServer("drop-box");
+```
+
+`directories` is the one thing that has no equivalent in the bucket: a bucket has no directories, keys merely
+share a prefix, so a client that expects to change into one before uploading has to be told they exist.
+
+Creating is refused with HTTP 409 if the ID is taken or if another server on the host already holds the port
+- a TCP port is not partitioned by account or namespace, so that check crosses both - and with 404 if the
+bucket is not there, since the bucket is resolved at creation rather than at start-up. A port outside
+1…`MAX_PORT` is refused here before the round trip.
+
+Starting asks rather than waits, as in EAP: `desiredState` is what was asked for and `state` what the host
+reports, so a freshly started server often reads `RUNNING`/`STOPPED` for a moment. `updateServer` sends only
+what it names, and a server picks a change up when it is next started rather than moving a listener out from
+under a client mid-session.
 
 ## Development
 

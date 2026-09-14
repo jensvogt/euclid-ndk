@@ -25,12 +25,48 @@ export interface AccessKey {
   createdAt: string;
 }
 
-/** What a user may reach in one account: which namespaces, and whether they administer it. */
-export interface AccountGrant {
+/**
+ * One role, given to one principal, somewhere.
+ *
+ * The only thing that grants anything, and the only thing that carries scope. Replaced the per-user
+ * `accountGrants`/`resourceGrants` lists: what a user may do is the union of the grants held by
+ * them and by every group they belong to.
+ *
+ * `grantId` is what {@link import("../modules/eam.js").EuclidSession.revokeRole} takes - not the
+ * (role, principal) pair, since the same role may be granted to the same principal twice with
+ * different scope and revoking has to say which.
+ */
+export interface Grant {
+  grantId: string;
+  role: string;
+  principal: string;
   accountId: string;
   namespaces: string[];
-  isAdmin: boolean;
+  resources: string[];
   granted: string;
+  grantedBy: string;
+}
+
+/**
+ * A named set of permissions, belonging to one account.
+ *
+ * A permission is `<module>:<action>` - `esm:put-object` - with `<module>:*` for every action of one module
+ * and {@link import("../modules/eam.js").EVERY_PERMISSION} for the lot;
+ * {@link import("../modules/eam.js").EuclidSession.listPermissions} is the vocabulary a server answers.
+ *
+ * `builtin` says which roles can be changed at all: euclid's own are computed rather than stored, so they are
+ * referenceable from every account, current with whatever actions the installation has, and writable nowhere.
+ */
+export interface Role {
+  name: string;
+  ern: string;
+  accountId: string;
+  region: string;
+  description: string;
+  permissions: string[];
+  builtin: boolean;
+  created: string;
+  modified: string;
 }
 
 /** A user. `password` is a hash when the server sends one at all - never the plaintext. */
@@ -41,7 +77,6 @@ export interface User {
   email: string;
   accountId: string;
   region: string;
-  accountGrants: AccountGrant[];
   created: string;
   modified: string;
 }
@@ -116,12 +151,30 @@ export function toAccessKey(document: unknown): AccessKey {
   };
 }
 
-export function toAccountGrant(document: unknown): AccountGrant {
+export function toGrant(document: unknown): Grant {
   return {
+    grantId: text(document, "grantId"),
+    role: text(document, "role"),
+    principal: text(document, "principal"),
     accountId: text(document, "accountId"),
     namespaces: strings(document, "namespaces"),
-    isAdmin: flag(document, "isAdmin"),
+    resources: strings(document, "resources"),
     granted: text(document, "granted"),
+    grantedBy: text(document, "grantedBy"),
+  };
+}
+
+export function toRole(document: unknown): Role {
+  return {
+    name: text(document, "name"),
+    ern: text(document, "ern"),
+    accountId: text(document, "accountId"),
+    region: text(document, "region"),
+    description: text(document, "description"),
+    permissions: strings(document, "permissions"),
+    builtin: flag(document, "builtin"),
+    created: text(document, "created"),
+    modified: text(document, "modified"),
   };
 }
 
@@ -133,7 +186,6 @@ export function toUser(document: unknown): User {
     email: text(document, "email"),
     accountId: text(document, "accountId"),
     region: text(document, "region"),
-    accountGrants: documents(document, "accountGrants").map(toAccountGrant),
     created: text(document, "created"),
     modified: text(document, "modified"),
   };

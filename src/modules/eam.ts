@@ -26,12 +26,16 @@ import {
   type AccessKey,
   type CreateAccessKeyResult,
   type Namespace,
+  type Grant,
+  type Role,
   type Page,
   toAccessKey,
   toAccount,
   toCreateAccessKeyResult,
   toLoginResult,
   toNamespace,
+  toGrant,
+  toRole,
   toPage,
   toUser,
   toUserGroup,
@@ -54,10 +58,71 @@ import { EuclidEns } from "./ens.js";
 import { EuclidEqs } from "./eqs.js";
 import { EuclidEsm } from "./esm.js";
 import { EuclidEss } from "./ess.js";
+import { EuclidEts } from "./ets.js";
 
 export type { ListOptions } from "./base.js";
 
 export const TARGET = "eam";
+
+/** How a role is scoped when it is granted. Both default to everything. */
+export interface GrantOptions {
+  /** Namespaces of the account it applies in; `["*"]` means every one of them. */
+  namespaces?: string[];
+  /** ERN patterns it applies to, each exact or ending in `*`; `["*"]` means every resource. */
+  resources?: string[];
+  /** The account to grant in, the caller's own unless given. Naming another needs admin rights on it. */
+  accountId?: string;
+}
+
+/** How a role listing is paged, and whether euclid's own roles are in it. */
+export interface ListRolesOptions extends ListOptions {
+  includeBuiltin?: boolean;
+}
+
+/** Which grants to list. Giving none asks for everything granted in the account. */
+export interface ListGrantsOptions {
+  principal?: string;
+  role?: string;
+  accountId?: string;
+}
+
+/** What {@link EuclidSession.checkPermission} answers: the verdict, and what decided it. */
+export interface PermissionCheck {
+  allowed: boolean;
+  reason: string;
+  /** The role whose grant allowed it, when one did. Empty on a refusal. */
+  role: string;
+}
+
+/**
+ * euclid's own roles: computed rather than stored, so they can be granted in any account, stay current with
+ * whatever actions the installation has, and cannot be changed or deleted.
+ *
+ * There is deliberately no installation-administrator role among them. Roles are per account, and an
+ * installation administrator is by definition not - that is membership of the `administrator` user group,
+ * which is what {@link EuclidSession.isAdmin} reports.
+ */
+export const ROLE_ACCOUNT_ADMINISTRATOR = "account-administrator";
+/** Every action except the destructive ones and access management. */
+export const ROLE_OPERATOR = "operator";
+/** Every action that only reads. */
+export const ROLE_READER = "reader";
+/** Send to a queue, publish to a topic, and resolve the two by name. */
+export const ROLE_PUBLISHER = "publisher";
+/** Take messages off a queue, and manage a topic subscription. */
+export const ROLE_CONSUMER = "consumer";
+/** What a deployed application needs of the modules it was granted. */
+export const ROLE_APPLICATION = "application";
+/** What a transfer server needs of the bucket it serves. */
+export const ROLE_TRANSFER = "transfer";
+
+/**
+ * The permission that grants every action of every module a role can reach.
+ *
+ * Which is not every module: euclid keeps some unbindable, so this is the strongest thing a role can say and
+ * is still not installation administration. `<module>:*` grants one module's lot.
+ */
+export const EVERY_PERMISSION = "*:*";
 
 /**
  * Authenticate with a signature when there is an access key to sign with, and with the bearer token
@@ -489,6 +554,11 @@ export class EuclidSession {
     return this.#module("eag", () => new EuclidEag(this));
   }
 
+  /** ETS - euclid's transfer module - on this session's credentials. */
+  ets(): EuclidEts {
+    return this.#module("ets", () => new EuclidEts(this));
+  }
+
   /** One client per module rather than one per call, built the first time it is asked for. */
   #module<T extends ModuleClient>(name: string, factory: () => T): T {
     const existing = this.#modules.get(name);
@@ -636,14 +706,148 @@ export class EuclidSession {
     await this.call("delete-namespace", { accountId, name });
   }
 
-  /** Grants a user access to a namespace. Requires admin rights on the account. */
-  async grantNamespaceAccess(user: string, accountId: string, namespace: string): Promise<void> {
-    await this.call("grant-namespace-access", { user, accountId, namespace });
+  // -- roles and grants ------------------------------------------------------------------------
+
+  /**
+   * Defines a role of this account: a name, and the permissions it carries.
+   *
+   * A permission is `<module>:<action>`, with `<module>:*` for every action of one module and
+   * {@link EVERY_PERMISSION} for the lot - {@link listPermissions} is the vocabulary this server answers,
+   * and a permission outside it is refused with HTTP 400 naming the one it did not know.
+   *
+   * Administrator only. Refused with 409 if the account already has a role of that name or if the name is one
+   * of euclid's own - see {@link ROLE_OPERATOR} and its siblings, which every account can already grant.
+   *
+   * @param permissions at least one: a role with none grants nothing, and the server says so rather than
+   *   storing it. Refused here before the round trip.
+   */
+  async createRole(name: string, permissions: readonly string[], description = ""): Promise<Role> {
+    requirePermissions(permissions);
+    const payload = { name, description, permissions: [...permissions] };
+    return toRole((await this.call("create-role", payload))["role"]);
   }
 
-  /** Revokes a user's access to a namespace. Requires admin rights on the account. */
-  async revokeNamespaceAccess(user: string, accountId: string, namespace: string): Promise<void> {
-    await this.call("revoke-namespace-access", { user, accountId, namespace });
+  /**
+   * Redefines a role of this account. The permission list replaces the stored one rather than adding to it,
+   * so a caller changing one entry sends the whole list.
+   *
+   * Administrator only, and refused with 403 for a built-in role: those are computed rather than stored, and
+   * an account that needs a variation of one defines its own.
+   */
+  async updateRole(name: string, permissions: readonly string[], description = ""): Promise<Role> {
+    requirePermissions(permissions);
+    const payload = { name, description, permissions: [...permissions] };
+    return toRole((await this.call("update-role", payload))["role"]);
+  }
+
+  /** One role by name, of this account or one of euclid's own. Administrator only. */
+  async getRole(name: string): Promise<Role> {
+    return toRole((await this.call("get-role", { name }))["role"]);
+  }
+
+  /**
+   * One page of roles, and how many exist in total.
+   *
+   * The account's own unless `includeBuiltin` asks for euclid's as well - which are the same seven in every
+   * account, so a listing leaves them out by default rather than repeating them to everybody.
+   */
+  async listRoles(options: ListRolesOptions = {}): Promise<Page<Role>> {
+    const payload = { ...listPayload(options, "name"), includeBuiltin: options.includeBuiltin ?? false };
+    return toPage(await this.call("list-roles", payload), "roles", toRole);
+  }
+
+  /**
+   * Deletes a role of this account.
+   *
+   * Administrator only, refused with 403 for a built-in one, and with 409 while anybody still holds it - the
+   * grants have to go first, which is what makes this safe to do in the wrong order.
+   */
+  async deleteRole(name: string): Promise<void> {
+    await this.call("delete-role", { name });
+  }
+
+  /**
+   * Gives a role to a user or a user group, scoped.
+   *
+   * Replaced `grantNamespaceAccess`: access to a namespace is now a role granted in it, so the same
+   * call says *what* the principal may do there as well as *where*.
+   *
+   * @param role a role of the account, or one of the built-ins - `account-administrator`,
+   *   `operator`, `reader`, `publisher`, `consumer`, `application`.
+   * @param principal a user ERN or a user-group ERN. One argument for both, because the ERN says which.
+   * @returns the grant, whose `grantId` is what {@link revokeRole} takes.
+   */
+  async grantRole(role: string, principal: string, options: GrantOptions = {}): Promise<Grant> {
+    const response = await this.call("grant-role", {
+      role,
+      principal,
+      accountId: options.accountId ?? "",
+      namespaces: options.namespaces ?? ["*"],
+      resources: options.resources ?? ["*"],
+    });
+    return toGrant((response as { grant?: unknown }).grant);
+  }
+
+  /**
+   * Removes one grant, by its own id.
+   *
+   * Not by role and principal: the same role may be granted to the same principal twice with
+   * different scope, and revoking has to say which. {@link listGrants} shows the ids.
+   */
+  async revokeRole(grantId: string): Promise<void> {
+    await this.call("revoke-role", { grantId });
+  }
+
+  /**
+   * Lists grants: by principal, by role, or - giving neither - a whole account.
+   *
+   * The two questions this model exists to answer are "what may they do" and "who can do this";
+   * giving neither answers a third, "what is granted here at all", which is what an overview wants
+   * and what one request per user would otherwise cost.
+   *
+   * Note that `principal` shows that principal's *own* grants and not those of the groups it
+   * belongs to, which is a different question - {@link checkPermission} answers the combined one.
+   */
+  async listGrants(options: ListGrantsOptions = {}): Promise<Page<Grant>> {
+    const response = await this.call("list-grants", {
+      principal: options.principal ?? "",
+      role: options.role ?? "",
+      accountId: options.accountId ?? "",
+    });
+    return toPage(response, "grants", toGrant);
+  }
+
+  /**
+   * Asks whether a user would be allowed to do something, and says why.
+   *
+   * Answers the verdict, what decided it, and the role whose grant did - counting the grants of
+   * every group the user belongs to, the way a real request would.
+   */
+  async checkPermission(userId: string, target: string, action: string,
+                        options: { namespace?: string; resourceErn?: string } = {}): Promise<PermissionCheck> {
+    const response = await this.call("check-permission", {
+      userId,
+      target,
+      action,
+      namespace: options.namespace ?? "",
+      resourceErn: options.resourceErn ?? "",
+    });
+    return {
+      allowed: response["allowed"] === true,
+      reason: typeof response["reason"] === "string" ? response["reason"] : "",
+      role: typeof response["role"] === "string" ? response["role"] : "",
+    };
+  }
+
+  /**
+   * Every permission a role can hold, as `<module>:<action>`.
+   *
+   * Generated from what the modules actually dispatch, so it is exactly what can be granted - and
+   * the two modules that are never grantable, `emd` and `emm`, are named separately rather than
+   * silently missing.
+   */
+  async listPermissions(): Promise<Record<string, unknown>> {
+    return this.call("list-permissions");
   }
 
   // -- monitoring ------------------------------------------------------------------------------
@@ -769,5 +973,15 @@ export class EuclidSession {
       return true;
     }
     return hasKey;
+  }
+}
+
+/**
+ * Refused here rather than on arrival: a role with no permissions grants nothing, so storing one would be a
+ * name that looks like access and is not.
+ */
+function requirePermissions(permissions: readonly string[]): void {
+  if (permissions.length === 0) {
+    throw new Error("a role with no permissions grants nothing; give it at least one");
   }
 }

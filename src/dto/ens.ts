@@ -108,6 +108,22 @@ export interface TopicStateResult {
   released: number;
 }
 
+/**
+ * What a resend handed over, and what it passed by.
+ *
+ * `held` is the number that says a resend was not the right command: those messages were published while the
+ * topic was stopped and have never been delivered at all, so {@link EuclidEns.startTopic} is what releases
+ * them. A resend leaves them alone, because delivering one from here would hand it over without marking it
+ * delivered and the next start would deliver it a second time.
+ */
+export interface ResendResult {
+  ern: string;
+  /** How many messages went to the topic's subscriptions again. */
+  resent: number;
+  /** How many were passed over as never having been delivered. */
+  held: number;
+}
+
 /** A topic's message-size limit after setting it, in bytes. Always a positive number here. */
 export interface TopicMaxMessageLengthResult {
   ern: string;
@@ -202,6 +218,14 @@ export function toTopicStateResult(document: unknown): TopicStateResult {
     ern: text(document, "ern"),
     status: text(document, "status"),
     released: number(document, "released"),
+  };
+}
+
+export function toResendResult(document: unknown): ResendResult {
+  return {
+    ern: text(document, "ern"),
+    resent: number(document, "resent"),
+    held: number(document, "held"),
   };
 }
 

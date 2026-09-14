@@ -12,9 +12,9 @@
  * session.close();
  * ```
  *
- * Nine modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
- * EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets) and EAG
- * (the API gateway) are reached from the session it hands back:
+ * Ten modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
+ * EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets), EAG (the API
+ * gateway) and ETS (FTP and SFTP servers) are reached from the session it hands back:
  *
  * ```ts
  * const bucket = await session.esm().createBucket("reports");
@@ -25,7 +25,7 @@
  * await session.eag().createRoute("orders", "/api/orders", { applicationId: "order-service" });
  * ```
  *
- * The remaining modules (EES, ETS) speak the same protocol through the same client and will follow;
+ * EES is the one module still to come, and speaks the same protocol through the same client;
  * {@link EuclidSession.call} and
  * {@link import("./modules/base.js").ModuleClient.call} reach any action this SDK does not name.
  */
@@ -50,7 +50,7 @@ export {
   EVERY_NAMESPACE,
   PRIORITY_HIGH,
   PRIORITY_LOW,
-  PRIORITY_MIDDLE,
+  PRIORITY_MEDIUM,
   QUEUE,
   TOPIC,
   VARIANT_BINARY,
@@ -75,7 +75,8 @@ export {
 export type {
   AccessKey,
   Account,
-  AccountGrant,
+  Grant,
+  Role,
   CreateAccessKeyResult,
   LoginResult,
   Metadata,
@@ -110,6 +111,7 @@ export type {
 } from "./dto/ekm.js";
 export type {
   CreateTopicResult,
+  ResendResult,
   Topic,
   TopicMessage,
   TopicMessageAttribute,
@@ -120,6 +122,7 @@ export type {
   TopicStateResult,
 } from "./dto/ens.js";
 export type { DeleteSecretResult, Secret, SecretValue } from "./dto/ess.js";
+export type { DeleteServerResult, TransferServer } from "./dto/ets.js";
 export type {
   CreateQueueResult,
   Queue,
@@ -158,10 +161,22 @@ export {
   AUTH_AUTO,
   AUTH_BEARER,
   AUTH_SIGNATURE,
+  EVERY_PERMISSION,
   EuclidEam,
   EuclidSession,
+  ROLE_ACCOUNT_ADMINISTRATOR,
+  ROLE_APPLICATION,
+  ROLE_CONSUMER,
+  ROLE_OPERATOR,
+  ROLE_PUBLISHER,
+  ROLE_READER,
+  ROLE_TRANSFER,
   type AuthMode,
+  type GrantOptions,
+  type ListGrantsOptions,
   type ListOptions,
+  type ListRolesOptions,
+  type PermissionCheck,
 } from "./modules/eam.js";
 export {
   EuclidEag,
@@ -247,6 +262,17 @@ export {
   type UpdateSecretChanges,
 } from "./modules/ess.js";
 export {
+  DEFAULT_ADDRESS,
+  DEFAULT_PASV_MAX,
+  DEFAULT_PASV_MIN,
+  EuclidEts,
+  MAX_PORT,
+  PROTOCOL_FTP,
+  PROTOCOL_SFTP,
+  type CreateServerOptions,
+  type UpdateServerChanges,
+} from "./modules/ets.js";
+export {
   DEFAULT_CONCURRENCY,
   DEFAULT_PART_SIZE,
   EuclidEsm,
@@ -257,6 +283,7 @@ export {
   type AttributeOptions,
   type DownloadOptions,
   type ListBucketsOptions,
+  type CountObjectsOptions,
   type ListObjectsOptions,
   type SubscribeOptions,
   type TouchObjectOptions,
@@ -264,7 +291,7 @@ export {
 } from "./modules/esm.js";
 
 /** The version this package was published as. */
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 
 /** Options {@link Euclid.login} passes through to the builder, for the case that needs no builder. */
 export interface LoginOptions {
@@ -286,7 +313,8 @@ export interface LoginOptions {
  * EAM is reached before logging in; every other module hangs off the session that login answers with -
  * {@link EuclidSession.esm}, {@link EuclidSession.eqs}, {@link EuclidSession.ens},
  * {@link EuclidSession.ekm}, {@link EuclidSession.ekv}, {@link EuclidSession.eap},
- * {@link EuclidSession.ess}, {@link EuclidSession.eag} - as in euclid-jdk and euclid-pdk.
+ * {@link EuclidSession.ess}, {@link EuclidSession.eag}, {@link EuclidSession.ets} - as in euclid-jdk and
+ * euclid-pdk.
  */
 export class Euclid {
   readonly #baseUrl: string;

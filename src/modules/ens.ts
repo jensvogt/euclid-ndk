@@ -45,6 +45,7 @@ import {
   toTopicMaxMessageLengthResult,
   toTopicMetadata,
   toTopicRetentionResult,
+  toResendResult,
   toTopicStateResult,
   type CreateTopicResult,
   type Topic,
@@ -54,6 +55,7 @@ import {
   type TopicMessageCount,
   type TopicMetadata,
   type TopicRetentionResult,
+  type ResendResult,
   type TopicStateResult,
 } from "../dto/ens.js";
 import { listPayload, ModuleClient, pagePayload, type ListOptions, type PageOptions } from "./base.js";
@@ -88,7 +90,7 @@ export const RETENTION_FOREVER = -1;
 export interface PublishMessageOptions {
   /** The publisher's own attributes, which travel onto the queues the message is delivered to. */
   attributes?: Record<string, VariantInput>;
-  /** `LOW`, `MIDDLE` or `HIGH`; left empty, the topic's own default applies. */
+  /** `LOW`, `MEDIUM` or `HIGH`; left empty, the topic's own default applies. */
   priority?: string;
 }
 
@@ -181,6 +183,33 @@ export class EuclidEns extends ModuleClient {
    */
   async startTopic(ern: string): Promise<TopicStateResult> {
     return toTopicStateResult(await this.call("start-topic", { ern }));
+  }
+
+  /**
+   * Hands what a topic still holds to its subscribers again, oldest first, each message with the payload,
+   * attributes and priority it was published with.
+   *
+   * A topic is not consumed the way a queue is: publishing fans a message out there and then, and what stays
+   * behind is the record of what was published - kept for the topic's retention period, and once a subscriber
+   * has consumed the queue message it received, that record is the only copy left. This is the way back to it
+   * for a subscriber that was down, one subscribed after the fact, or one that acknowledged a message and
+   * then failed to process it.
+   *
+   * **It goes to every subscriber**, not only the one that missed something. A consumer that is idempotent
+   * does not care; one that is not will double-process. On a busy topic, name a single `messageId` rather
+   * than replaying a fortnight of traffic to everybody.
+   *
+   * Messages held because the topic was stopped are not resent - they have never been delivered at all, and
+   * {@link startTopic} is what releases them and marks them delivered. They are counted in the result's
+   * `held` instead. A stopped topic is refused outright, for the same reason: it delivers nothing by
+   * somebody's decision, and this would be the way around that.
+   *
+   * @param messageId resend only this message, as {@link listMessages} reports its id; omitted resends
+   * everything the topic holds. One belonging to another topic is refused rather than fanned out to
+   * subscriptions it was never published to.
+   */
+  async resendMessages(ern: string, messageId = ""): Promise<ResendResult> {
+    return toResendResult(await this.call("resend-messages", { ern, messageId }));
   }
 
   /**
