@@ -11,7 +11,7 @@
  */
 
 import { toVariant, toVariantMap, type Variant } from "./com.js";
-import { number, object, stringMap, text } from "./json.js";
+import { flag, number, object, stringMap, text } from "./json.js";
 
 // -- resources -----------------------------------------------------------------------------------
 
@@ -115,13 +115,21 @@ export interface TopicStateResult {
  * topic was stopped and have never been delivered at all, so {@link EuclidEns.startTopic} is what releases
  * them. A resend leaves them alone, because delivering one from here would hand it over without marking it
  * delivered and the next start would deliver it a second time.
+ *
+ * `background` says the server answered before handing over any of them, in which case `messages` is how
+ * many the topic held when the resend started and both counts are zero. The module log carries the
+ * finished figures.
  */
 export interface ResendResult {
   ern: string;
-  /** How many messages went to the topic's subscriptions again. */
+  /** How many messages went to the topic's subscriptions again; zero when `background`. */
   resent: number;
-  /** How many were passed over as never having been delivered. */
+  /** How many were passed over as never having been delivered; zero when `background`. */
   held: number;
+  /** How many the topic held when a background resend started, zero otherwise. */
+  messages: number;
+  /** Whether the server is still handing them over. */
+  background: boolean;
 }
 
 /** A topic's message-size limit after setting it, in bytes. Always a positive number here. */
@@ -226,6 +234,8 @@ export function toResendResult(document: unknown): ResendResult {
     ern: text(document, "ern"),
     resent: number(document, "resent"),
     held: number(document, "held"),
+    messages: number(document, "messages"),
+    background: flag(document, "async"),
   };
 }
 

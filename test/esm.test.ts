@@ -183,8 +183,29 @@ describe("buckets", () => {
     assert.deepEqual(gateway.last().json(), { ern: BUCKET, internal: true });
 
     assert.equal((await esm.purgeBucket(BUCKET, "2025/")).count, 7);
-    assert.deepEqual(gateway.last().json(), { ern: BUCKET, prefix: "2025/" });
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, prefix: "2025/", async: false });
     await esm.deleteBucket(BUCKET);
+  });
+
+  it("deletes a bucket in the background", async () => {
+    // A bucket goes with its objects, and a large one is emptied in the background first.
+    gateway.answer("esm", "delete-bucket", { ern: BUCKET, async: true, jobId: "job-7", objects: 40000 }, 202);
+
+    const result = await esm.deleteBucket(BUCKET, true);
+
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, async: true });
+    assert.deepEqual([result.count, result.background, result.jobId], [40000, true, "job-7"]);
+  });
+
+  it("purges a bucket in the background", async () => {
+    // Emptying a bucket can take minutes, so the server writes the work down and answers at once.
+    gateway.answer("esm", "purge-bucket", { ern: BUCKET, async: true, jobId: "job-42", objects: 120000 }, 202);
+
+    const result = await esm.purgeBucket(BUCKET, "", true);
+
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, prefix: "", async: true });
+    // "objects" here, "count" when it runs inline: the same figure at two points in the same work.
+    assert.deepEqual([result.count, result.background, result.jobId], [120000, true, "job-42"]);
   });
 
   it("reports what encryption did not touch", async () => {

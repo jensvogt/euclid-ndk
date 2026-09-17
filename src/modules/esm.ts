@@ -48,6 +48,7 @@ import {
   type EnableEncryptionResult,
   type EsmObject,
   type ObjectAttribute,
+  type DeleteBucketResult,
   type PurgeBucketResult,
   type RenameBucketResult,
   type SetBucketInternalResult,
@@ -64,6 +65,7 @@ import {
   toEnableEncryptionResult,
   toEsmObject,
   toObjectAttribute,
+  toDeleteBucketResult,
   toPurgeBucketResult,
   toRenameBucketResult,
   toSetBucketInternalResult,
@@ -233,9 +235,25 @@ export class EuclidEsm extends ModuleClient {
     return toCreateBucketResult(await this.call("create-bucket", { name, internal }));
   }
 
-  /** Deletes a bucket. It has to be empty; {@link purgeBucket} is what makes it so. */
-  async deleteBucket(ern: string): Promise<void> {
-    await this.call("delete-bucket", { ern });
+  /**
+   * Deletes a bucket, and its objects with it.
+   *
+   * Nothing else ever would: an object is only ever reached through its bucket, so a row left behind would
+   * be unreachable for good and the file it names would be disk nothing accounts for. {@link purgeBucket}
+   * is the one that empties a bucket and keeps it.
+   *
+   * `background` is what a bucket of any size wants: emptying one can take minutes, and holding a request
+   * open for all of it is a request that times out while the removal carries on invisibly behind it. The
+   * server then answers as soon as it has written the work down.
+   *
+   * The bucket goes when the emptying finishes, so until then it stays listed - and still deletable. A
+   * caller watching for it to disappear is watching the right thing.
+   *
+   * Deleting inline answers with nothing, since the bucket is gone by then; the result is only worth
+   * reading when `background` is true.
+   */
+  async deleteBucket(ern: string, background = false): Promise<DeleteBucketResult> {
+    return toDeleteBucketResult(await this.call("delete-bucket", { ern, async: background }));
   }
 
   /**
@@ -283,9 +301,17 @@ export class EuclidEsm extends ModuleClient {
    * Deletes a bucket's objects, leaving the bucket itself in place.
    *
    * A prefix narrows it to the keys that start with that; an empty one purges everything.
+   *
+   * `background` is what a bucket of any size wants: emptying one can take minutes, and holding a request
+   * open for all of it is a request that times out while the removal carries on invisibly behind it. The
+   * server then answers as soon as it has written the work down, and the result's `count` is what the
+   * bucket held rather than what has gone.
+   *
+   * Written down is the point: the job survives the instance that took it on being stopped - which the
+   * autoscaler does to an instance it sees no requests on - and another picks it up and carries on.
    */
-  async purgeBucket(ern: string, prefix = ""): Promise<PurgeBucketResult> {
-    return toPurgeBucketResult(await this.call("purge-bucket", { ern, prefix }));
+  async purgeBucket(ern: string, prefix = "", background = false): Promise<PurgeBucketResult> {
+    return toPurgeBucketResult(await this.call("purge-bucket", { ern, prefix, async: background }));
   }
 
   /**

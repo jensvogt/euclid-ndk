@@ -12,9 +12,9 @@
  * session.close();
  * ```
  *
- * Ten modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
+ * Eleven modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
  * EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets), EAG (the API
- * gateway) and ETS (FTP and SFTP servers) are reached from the session it hands back:
+ * gateway), ETS (FTP and SFTP servers) and EMO (monitoring) are reached from the session it hands back:
  *
  * ```ts
  * const bucket = await session.esm().createBucket("reports");
@@ -122,6 +122,23 @@ export type {
   TopicStateResult,
 } from "./dto/ens.js";
 export type { DeleteSecretResult, Secret, SecretValue } from "./dto/ess.js";
+export {
+  GAUGE,
+  RATE,
+  RESOLUTION_DAY,
+  RESOLUTION_HOUR,
+  RESOLUTION_RAW,
+  STORED_GAUGE,
+  STORED_RATE,
+  gaugeMetric,
+  metricLabels,
+  metricQueryToJson,
+  rateMetric,
+  toMetricSample,
+  type Metric,
+  type MetricQuery,
+  type MetricSample,
+} from "./dto/emo.js";
 export type { DeleteServerResult, TransferServer } from "./dto/ets.js";
 export type {
   CreateQueueResult,
@@ -148,6 +165,7 @@ export type {
   EnableEncryptionResult,
   EsmObject,
   ObjectAttribute,
+  DeleteBucketResult,
   PurgeBucketResult,
   RenameBucketResult,
   SetBucketInternalResult,
@@ -262,6 +280,15 @@ export {
   type UpdateSecretChanges,
 } from "./modules/ess.js";
 export {
+  Counter,
+  DEFAULT_STEP_MS,
+  EuclidEmo,
+  Gauge,
+  MeterRegistry,
+  Timer,
+  type RegistryOptions,
+} from "./modules/emo.js";
+export {
   DEFAULT_ADDRESS,
   DEFAULT_PASV_MAX,
   DEFAULT_PASV_MIN,
@@ -291,7 +318,7 @@ export {
 } from "./modules/esm.js";
 
 /** The version this package was published as. */
-export const VERSION = "0.6.0";
+export const VERSION = "0.7.0";
 
 /** Options {@link Euclid.login} passes through to the builder, for the case that needs no builder. */
 export interface LoginOptions {
@@ -313,8 +340,8 @@ export interface LoginOptions {
  * EAM is reached before logging in; every other module hangs off the session that login answers with -
  * {@link EuclidSession.esm}, {@link EuclidSession.eqs}, {@link EuclidSession.ens},
  * {@link EuclidSession.ekm}, {@link EuclidSession.ekv}, {@link EuclidSession.eap},
- * {@link EuclidSession.ess}, {@link EuclidSession.eag}, {@link EuclidSession.ets} - as in euclid-jdk and
- * euclid-pdk.
+ * {@link EuclidSession.ess}, {@link EuclidSession.eag}, {@link EuclidSession.ets},
+ * {@link EuclidSession.emo} - as in euclid-jdk and euclid-pdk.
  */
 export class Euclid {
   readonly #baseUrl: string;

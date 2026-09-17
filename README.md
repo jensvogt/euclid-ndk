@@ -2,10 +2,10 @@
 
 Node.js client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
-Ten modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
+Eleven modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
 EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets), EAG (the
-API gateway) and ETS (FTP and SFTP servers) are reached from the session it hands back. EES is the one
-module still to come, and speaks the same protocol over the same client.
+API gateway), ETS (FTP and SFTP servers) and EMO (monitoring) are reached from the session it hands back.
+EES is the one module still to come, and speaks the same protocol over the same client.
 
 Requires Node 20 or newer, and **has no dependencies**. Installing this SDK does not bring a TLS
 stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and the
@@ -68,7 +68,7 @@ const { total, items } = await session.listAccounts({ pageSize: 5 });
 ```
 
 The other modules hang off that session - `session.esm()`, `session.eqs()`, `session.ens()`,
-`session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()` - and each answers
+`session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()`, `session.emo()` - and each answers
 with the same client every time, so asking for one inside a loop costs one connection rather than one
 per iteration:
 
@@ -763,6 +763,86 @@ Starting asks rather than waits, as in EAP: `desiredState` is what was asked for
 reports, so a freshly started server often reads `RUNNING`/`STOPPED` for a moment. `updateServer` sends only
 what it names, and a server picks a change up when it is next started rather than moving a listener out from
 under a client mid-session.
+
+## What EMO covers
+
+`session.emo()` answers with the monitoring client.
+
+| Method | Action |
+| --- | --- |
+| `pushMetrics` | adding an application's own measurements to the installation's |
+| `registry` | meters that accumulate in the process and publish on a step |
+| `listMetrics`, `average` | reading the rows back (administrator-only) |
+| `metrics` | EMO's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+euclid's own modules push their samples here rather than being polled, because a module the autoscaler is
+tearing down cannot answer a poll - it simply stops pushing. An application is in the same position, and what
+it pushes lands in the same rows EMO's collectors write: the same rollups, the same retention, the same graphs
+as CPU, memory and the module gauges.
+
+### Meters, and what a step means
+
+`pushMetrics` takes numbers that are already final. An application that wants to count and time things wants a
+registry, which is what euclid-jdk does with Micrometer and euclid-pdk with its own:
+
+```ts
+const metrics = session.emo().registry("invoice-parser", { commonLabels: { host } });
+const parsed = metrics.counter("invoices.parsed");
+const failed = metrics.counter("invoices.parsed", { outcome: "failed" });
+const duration = metrics.timer("invoice.parse");
+metrics.gaugeFrom("queue.depth", () => queue.length);
+
+try {
+  for (const invoice of incoming) {
+    await duration.time(async () => ((await parse(invoice)) ? parsed : failed).increment());
+  }
+} finally {
+  await metrics.close();     // publishes the step in hand
+}
+```
+
+A counter and a timer report what accumulated since the last publish and start again, which is what makes them
+rates to EMO - the thing a rollup sums. A gauge reports what it reads at the moment of publishing and is not
+reset. Every registered meter is published every step, including the ones that did not move: a zero is a fact,
+and a gap in a graph is not. The step defaults to `DEFAULT_STEP_MS` (a minute, as in euclid-jdk); `stepMs: 0`
+starts no timer at all and leaves publishing to `publish()`, which is what an application with a loop of its
+own wants, and what a test wants.
+
+A timer is given durations in **seconds** and publishes them in **milliseconds**, as `<name>.count` and
+`<name>.total` (rates) and `<name>.max` (a gauge) - the names euclid-jdk's registry uses, so the same operation
+graphs beside a Java one's. There are no percentiles: EMO stores one value per series per interval, so a p99
+would have to be computed here and pushed as a series of its own.
+
+Three things are worth knowing before this runs in anger:
+
+* **Labels are series.** Every meter is one stored row per step, forever, so the number of label combinations
+  is the number of series - a label carrying a request ID is how a monitoring database is filled up.
+* **A failed push is counted, not retried.** `publishes` and `failedPublishes` say whether the monitoring is
+  working, which nothing else can: a metric about pushing metrics cannot be pushed. A rate sent twice is
+  counted twice, and a monitoring system that lies about throughput is worse than one with a gap.
+* **The publish timer is unref'd**, so it never keeps a process alive. Call `close()` in a `finally`: the last
+  step is usually the interesting one and the one a process that simply exits would drop.
+
+`NaN` and infinities are skipped rather than pushed - they are what a gauge over an empty collection reads, and
+they would poison every rollup that averaged them.
+
+### Reading it back
+
+`listMetrics` and `average` are administrator-only: publishing your own numbers needs no special rights,
+reading everybody's is a different question. A query narrows by name, labels, a window and a resolution, and
+anything it does not name is left out of the request entirely rather than sent empty.
+
+```ts
+import { RESOLUTION_HOUR } from "euclid-ndk";
+
+const rows = await emo.listMetrics({ name: "invoices.parsed", since, resolution: RESOLUTION_HOUR });
+const mean = await emo.average({ name: "invoice.parse.total" });
+```
+
+A row's `value` is the mean for a gauge and the sum for a rate - `type` says which, in upper case, where a push
+spells it in lower - and `minValue`/`maxValue` survive a rollup, so an hourly row still knows the worst five
+minutes inside it.
 
 ## Development
 

@@ -103,10 +103,42 @@ export interface SetBucketInternalResult {
   internal: boolean;
 }
 
-/** A purged bucket, and how many objects went. */
+/**
+ * What a background bucket deletion took on.
+ *
+ * Only a deletion asked to run in the background answers with anything at all - a bucket deleted inline is
+ * simply gone by the time the call returns. So `background` is true whenever this is worth reading, `count`
+ * is how many objects the bucket held when the work was taken on, and `jobId` names the job doing it, which
+ * outlives the instance that started it.
+ *
+ * The bucket itself goes when the emptying finishes, so it stays listed - and still deletable - until it is
+ * genuinely gone.
+ */
+export interface DeleteBucketResult {
+  ern: string;
+  /** How many objects the bucket held when the deletion was taken on. */
+  count: number;
+  /** The background job doing the work. */
+  jobId: string;
+  /** Whether the server is still working through it. */
+  background: boolean;
+}
+
+/**
+ * A purged bucket, and how many objects went.
+ *
+ * `background` says the server answered before doing any of it, in which case `count` is how many
+ * objects the bucket held when the purge was taken on rather than how many have gone, and `jobId`
+ * names the job doing it. That job outlives the instance that started it - one stopped by the
+ * autoscaler, or lost to a crash, leaves a job another instance picks up and carries on.
+ */
 export interface PurgeBucketResult {
   ern: string;
   count: number;
+  /** The background job doing the work, empty unless `background`. */
+  jobId: string;
+  /** Whether the server is still working through the objects. */
+  background: boolean;
 }
 
 /**
@@ -267,8 +299,25 @@ export function toSetBucketInternalResult(document: unknown): SetBucketInternalR
   return { ern: text(document, "ern"), name: text(document, "name"), internal: flag(document, "internal") };
 }
 
+export function toDeleteBucketResult(document: unknown): DeleteBucketResult {
+  return {
+    ern: text(document, "ern"),
+    count: number(document, "objects"),
+    jobId: text(document, "jobId"),
+    background: flag(document, "async"),
+  };
+}
+
 export function toPurgeBucketResult(document: unknown): PurgeBucketResult {
-  return { ern: text(document, "ern"), count: number(document, "count") };
+  // "count" when the purge ran inline, "objects" when it was taken on: the same figure at two
+  // points in the same work, and count reads it either way rather than a zero that only means the
+  // other field name was used.
+  return {
+    ern: text(document, "ern"),
+    count: number(document, "count") || number(document, "objects"),
+    jobId: text(document, "jobId"),
+    background: flag(document, "async"),
+  };
 }
 
 export function toDeleteObjectsResult(document: unknown): DeleteObjectsResult {

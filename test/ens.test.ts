@@ -213,7 +213,7 @@ describe("stopping and starting a topic", () => {
 
     const result = await ens.resendMessages(TOPIC);
 
-    assert.deepEqual(gateway.last().json(), { ern: TOPIC, messageId: "" });
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, messageId: "", async: false });
     assert.deepEqual([result.ern, result.resent, result.held], [TOPIC, 42, 0]);
   });
 
@@ -222,7 +222,18 @@ describe("stopping and starting a topic", () => {
     gateway.answer("ens", "resend-messages", { ern: TOPIC, resent: 1, held: 0 });
 
     assert.equal((await ens.resendMessages(TOPIC, "m-7")).resent, 1);
-    assert.deepEqual(gateway.last().json(), { ern: TOPIC, messageId: "m-7" });
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, messageId: "m-7", async: false });
+  });
+
+  it("resends a whole topic in the background", async () => {
+    // A fortnight of traffic outlasts the request, so the server counts it and answers at once.
+    gateway.answer("ens", "resend-messages", { ern: TOPIC, async: true, messages: 8400 }, 202);
+
+    const result = await ens.resendMessages(TOPIC, "", true);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, messageId: "", async: true });
+    // Nothing had happened yet when this was answered, so both counts are zero rather than partial.
+    assert.deepEqual([result.messages, result.background, result.resent, result.held], [8400, true, 0, 0]);
   });
 
   it("reports what a resend passed over as held", async () => {
