@@ -537,13 +537,63 @@ describe("objects in bytes", () => {
     );
   });
 
+  it("sends one put-object for a file below the part size", async () => {
+    // One part is not a multipart upload. create-upload, upload-part and complete-upload are three
+    // round trips, and on the server an upload directory, a part file, an assembly pass and a
+    // separate MD5 - none of which buys anything when there is only ever going to be one part.
+    // Measured before this existed: 0.94 parts per upload, and 793,614 objects written in an hour
+    // with every one of them under a kilobyte.
+    await writeFile(path("q3.pdf"), "a report");
+
+    await esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), { partSize: 5000 });
+
+    assert.deepEqual(storage.object(BUCKET, "q3.pdf"), Buffer.from("a report"));
+    assert.equal(requestsFor("put-object").length, 1);
+    assert.equal(requestsFor("create-upload").length, 0);
+    assert.equal(requestsFor("upload-part").length, 0);
+  });
+
+  it("still uses multipart for a file exactly one part long", async () => {
+    // The boundary, stated rather than left to the reader: strictly below goes whole, equal does not.
+    await writeFile(path("q3.pdf"), "a report");
+
+    await esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), { partSize: 8 });
+
+    assert.equal(requestsFor("create-upload").length, 1);
+    assert.equal(requestsFor("put-object").length, 0);
+  });
+
+  it("carries the attributes of a small upload too", async () => {
+    // put-object takes them on its own headers, so a file that changed route could lose the
+    // metadata whatever put it there knows about it.
+    await writeFile(path("q3.pdf"), "a report");
+
+    await esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), {
+      partSize: 5000,
+      attributes: { tenant: "acme" },
+      systemAttributes: { priority: "HIGH" },
+    });
+
+    const put = requestsFor("put-object")[0];
+    assert.deepEqual(JSON.parse(put.headers["x-euclid-attributes"] as string), {
+      tenant: { type: "string", value: "acme" },
+    });
+    assert.deepEqual(JSON.parse(put.headers["x-euclid-system-attributes"] as string), {
+      priority: { type: "string", value: "HIGH" },
+    });
+  });
+
   it("still makes an object out of an empty file", async () => {
     await writeFile(path("empty"), Buffer.alloc(0));
 
     await esm.uploadFile(BUCKET, "empty", path("empty"));
 
+    // It used to create an upload, send one empty part and complete it - three calls to store
+    // nothing, with the part manufactured because an empty file yields none. The object is the
+    // same either way.
     assert.deepEqual(storage.object(BUCKET, "empty"), Buffer.alloc(0));
-    assert.equal(requestsFor("upload-part").length, 1);
+    assert.equal(requestsFor("put-object").length, 1);
+    assert.equal(requestsFor("create-upload").length, 0);
   });
 
   it("rides the upload's attributes on the call that completes it", async () => {
@@ -551,7 +601,10 @@ describe("objects in bytes", () => {
     // built from what completing the upload was given, so an attribute added later is overwritten.
     await writeFile(path("q3.pdf"), "a report");
 
+    // partSize 2 against 8 bytes: four parts, so this stays a multipart upload. Left at the
+    // default the file goes up whole and there is no complete-upload to assert on.
     await esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), {
+      partSize: 2,
       attributes: { tenant: "acme" },
       systemAttributes: { priority: "HIGH" },
     });
@@ -573,7 +626,9 @@ describe("retries", () => {
     await writeFile(path("q3.pdf"), "a report");
     storage.failNext("upload-part", 2);
 
-    await esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), { concurrency: 1 });
+    // partSize 8 is exactly the file: one part, still multipart, so the count is about the
+    // retry rather than about how many pieces the file was cut into.
+    await esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), { partSize: 8, concurrency: 1 });
 
     assert.deepEqual(storage.object(BUCKET, "q3.pdf"), Buffer.from("a report"));
     assert.equal(requestsFor("upload-part").length, 3);
@@ -586,7 +641,7 @@ describe("retries", () => {
     storage.failNext("create-upload", 1);
     storage.failNext("complete-upload", 1);
 
-    await esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"));
+    await esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), { partSize: 8 });
 
     assert.deepEqual(storage.object(BUCKET, "q3.pdf"), Buffer.from("a report"));
     assert.equal(requestsFor("create-upload").length, 2);
@@ -597,7 +652,7 @@ describe("retries", () => {
     storage.failNext("upload-part", 99);
 
     await assert.rejects(
-      () => esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf")),
+      () => esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), { partSize: 8 }),
       (error: EuclidServiceError) => {
         assert.deepEqual([error.target, error.action, error.status], ["esm", "upload-part", 500]);
         assert.equal(error.reason, "Storage temporarily unavailable");
@@ -613,7 +668,7 @@ describe("retries", () => {
     storage.failNext("upload-part", 99, 400);
 
     await assert.rejects(
-      () => esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf")),
+      () => esm.uploadFile(BUCKET, "q3.pdf", path("q3.pdf"), { partSize: 8 }),
       (error: EuclidServiceError) => {
         assert.equal(error.status, 400);
         return true;
