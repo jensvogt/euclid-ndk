@@ -1,6 +1,6 @@
 {
   "name": "euclid-ndk",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Node.js SDK for the euclid server",
   "keywords": [
     "euclid",
