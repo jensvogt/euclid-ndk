@@ -28,8 +28,10 @@
 import {
   toApplication,
   toLogLevelResult,
+  toRestartResult,
   type Application,
   type LogLevelResult,
+  type RestartResult,
 } from "../dto/eap.js";
 import { ModuleClient } from "./base.js";
 import type { EuclidSession } from "./eam.js";
@@ -270,6 +272,22 @@ export class EuclidEap extends ModuleClient {
   /** Asks for an application to stop, and answers with it as it stands. */
   async stopApplication(applicationId: string): Promise<Application> {
     return this.#application("stop-application", { applicationId });
+  }
+
+  /**
+   * Asks for a running application's instances to be started again.
+   *
+   * The manager stops the whole pool on its next reconcile and starts it straight back up from the current
+   * definition - the same thing it does after a redeploy, with nothing new to pick up. The artifact, the
+   * environment and the credentials all come back as they were, so this is for an instance that has to do
+   * its startup again rather than a way to deploy anything.
+   *
+   * Deliberately not {@link stopApplication} followed by {@link startApplication}: between those two the
+   * desired state is `STOPPED`, so a caller that fails in between leaves the application down. Here it stays
+   * `RUNNING` throughout, and one that is already stopped is refused with HTTP 400 rather than started.
+   */
+  async restartApplication(applicationId: string): Promise<RestartResult> {
+    return toRestartResult(await this.call("restart-application", { applicationId }));
   }
 
   /**

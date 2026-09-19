@@ -56,6 +56,38 @@ afterEach(async () => {
 // -- topics ------------------------------------------------------------------------------------
 
 describe("topics", () => {
+
+  it("describes one topic the way a listing describes each", async () => {
+    gateway.answer("ens", "get-topic", {
+      topic: { name: "orders", ern: TOPIC, owner: "jens", messages: 12, retentionPeriod: 86400 },
+    });
+
+    const topic = await ens.getTopic("orders");
+
+    assert.deepEqual(gateway.last().json(), { name: "orders" });
+    assert.equal(topic.ern, TOPIC);
+    assert.equal(topic.messages, 12);
+    assert.equal(topic.retentionPeriod, 86400);
+  });
+
+  it("asks for a topic by ERN as well as by name", async () => {
+    gateway.answer("ens", "get-topic", { topic: { name: "orders", ern: TOPIC } });
+
+    await ens.getTopic(TOPIC);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC });
+  });
+
+  it("reads a published message back by id", async () => {
+    gateway.answer("ens", "get-message", {
+      message: { messageId: "m-1", topicErn: TOPIC, body: "hello", status: "PUBLISHED" },
+    });
+
+    const message = await ens.getMessage("m-1");
+
+    assert.deepEqual(gateway.last().json(), { messageId: "m-1" });
+    assert.equal(message.body, "hello");
+  });
   it("creates and lists them", async () => {
     gateway.answer("ens", "create-topic", { name: "order-events", ern: TOPIC });
     gateway.answer("ens", "list-topics", {

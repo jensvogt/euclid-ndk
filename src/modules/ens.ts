@@ -140,6 +140,27 @@ export class EuclidEns extends ModuleClient {
   }
 
   /** The ERN of the topic of this name, in the session's account and namespace. */
+  /**
+   * One topic, by name or by ERN.
+   *
+   * What comes back is exactly what {@link listTopics} describes each of its own with - the ERN,
+   * the owner, retention, tags, how much it holds and what has been published through it - so this
+   * is the single-topic form of a listing rather than another view of one.
+   *
+   * A value starting with `ern:` is taken as an ERN and names one topic in the installation;
+   * anything else is a name and is resolved in the session's own account and namespace, the way
+   * {@link getTopicErn} resolves one.
+   */
+  async getTopic(nameOrErn: string): Promise<Topic> {
+    const payload = nameOrErn.startsWith("ern:") ? { ern: nameOrErn } : { name: nameOrErn };
+    return toTopic((await this.call("get-topic", payload)).topic);
+  }
+
+  /** One published message, by its id. */
+  async getMessage(messageId: string): Promise<TopicMessage> {
+    return toTopicMessage((await this.call("get-message", { messageId })).message);
+  }
+
   async getTopicErn(name: string): Promise<string> {
     return this.textOf("get-topic-ern", { name }, "ern");
   }

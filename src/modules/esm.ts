@@ -267,6 +267,23 @@ export class EuclidEsm extends ModuleClient {
     return toPage(await this.call("list-buckets", payload), "buckets", toBucket);
   }
 
+  /**
+   * One bucket, by name or by ERN.
+   *
+   * What comes back is exactly what {@link listBuckets} describes each of its own with - the ERN,
+   * the account and namespace, the size and object count, encryption, tags and timestamps - so this
+   * is the single-bucket form of a listing rather than another view of one.
+   *
+   * A value starting with `ern:` is taken as an ERN and names one bucket in the installation;
+   * anything else is a name and is resolved in the session's own account and namespace, the way
+   * {@link getBucketErn} resolves one. A bucket that exists only in another namespace is a 404 when
+   * asked for by name.
+   */
+  async getBucket(nameOrErn: string): Promise<Bucket> {
+    const payload = nameOrErn.startsWith("ern:") ? { ern: nameOrErn } : { name: nameOrErn };
+    return toBucket((await this.call("get-bucket", payload)).bucket);
+  }
+
   /** The ERN of the bucket of this name, in the session's account and namespace. */
   async getBucketErn(name: string): Promise<string> {
     return this.textOf("get-bucket-ern", { name }, "ern");

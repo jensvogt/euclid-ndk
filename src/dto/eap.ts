@@ -8,7 +8,7 @@
  * in hand; ERNs are what euclid stores, and the server resolves the one into the other.
  */
 
-import { documents, number, stringMap, strings, text } from "./json.js";
+import { documents, flag, number, stringMap, strings, text } from "./json.js";
 
 /**
  * One running instance of an application, and where it can be reached.
@@ -105,6 +105,19 @@ export interface LogLevelResult {
   channel: string;
 }
 
+/**
+ * What a restart request came to.
+ *
+ * `restarting` says the request was recorded, not that anything has happened: the manager stops and starts
+ * the instances on its next reconcile. `instances` is what was running when the request was answered, so it
+ * is the size of the pool about to be cycled rather than the one that came back.
+ */
+export interface RestartResult {
+  applicationId: string;
+  restarting: boolean;
+  instances: number;
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toEndpoint(document: unknown): Endpoint {
@@ -143,6 +156,14 @@ export function toApplication(document: unknown): Application {
     endpoints: documents(document, "endpoints").map(toEndpoint),
     created: text(document, "created"),
     modified: text(document, "modified"),
+  };
+}
+
+export function toRestartResult(document: unknown): RestartResult {
+  return {
+    applicationId: text(document, "applicationId"),
+    restarting: flag(document, "restarting"),
+    instances: number(document, "instances"),
   };
 }
 

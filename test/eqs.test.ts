@@ -63,6 +63,51 @@ function requestsFor(action: string) {
 // -- queues ------------------------------------------------------------------------------------
 
 describe("queues", () => {
+
+  it("describes one queue the way a listing describes each", async () => {
+    gateway.answer("eqs", "get-queue", {
+      queue: {
+        name: "orders",
+        ern: QUEUE,
+        owner: "jens",
+        available: 7,
+        delayed: 1,
+        invisible: 2,
+        visibility: 45,
+        tags: { team: "fulfilment" },
+      },
+    });
+
+    const queue = await eqs.getQueue("orders");
+
+    assert.deepEqual(gateway.last().json(), { name: "orders" });
+    assert.equal(queue.ern, QUEUE);
+    assert.equal(queue.available, 7);
+    assert.equal(queue.invisible, 2);
+    assert.deepEqual(queue.tags, { team: "fulfilment" });
+  });
+
+  it("asks for a queue by ERN as well as by name", async () => {
+    gateway.answer("eqs", "get-queue", { queue: { name: "orders", ern: QUEUE } });
+
+    await eqs.getQueue(QUEUE);
+
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE });
+  });
+
+  it("asks for a message by id rather than by receipt handle", async () => {
+    // A receipt handle is void once its delivery's claim expires; the id names the message for as
+    // long as it exists, which is what asking about one after the fact needs.
+    gateway.answer("eqs", "get-message", {
+      message: { messageId: "m-1", queueErn: QUEUE, body: "hello", status: "AVAILABLE", receivedCount: 2 },
+    });
+
+    const message = await eqs.getMessage("m-1");
+
+    assert.deepEqual(gateway.last().json(), { messageId: "m-1" });
+    assert.equal(message.body, "hello");
+    assert.equal(message.receivedCount, 2);
+  });
   it("creates and lists them", async () => {
     gateway.answer("eqs", "create-queue", { name: "orders", ern: QUEUE });
     gateway.answer("eqs", "list-queues", {

@@ -110,6 +110,40 @@ describe("buckets", () => {
     assert.deepEqual(listed.items[1]?.tags, {});
   });
 
+  it("describes one bucket the way a listing describes each", async () => {
+    gateway.answer("esm", "get-bucket", {
+      bucket: {
+        name: "reports",
+        ern: BUCKET,
+        owner: "jens",
+        size: 2048,
+        objects: 7,
+        tags: { team: "media" },
+        encrypted: true,
+        encryptionKeyErn: "ern:ekm:key/1",
+      },
+    });
+
+    const bucket = await esm.getBucket("reports");
+
+    assert.deepEqual(gateway.last().json(), { name: "reports" });
+    assert.equal(bucket.ern, BUCKET);
+    assert.equal(bucket.size, 2048);
+    assert.equal(bucket.objects, 7);
+    assert.deepEqual(bucket.tags, { team: "media" });
+    assert.equal(bucket.encrypted, true);
+  });
+
+  it("asks for a bucket by ERN as well as by name", async () => {
+    // A name is resolved in the session's own namespace and an ERN is not, so which of the two was
+    // given has to reach the server as the field it is - the caller should not have to say.
+    gateway.answer("esm", "get-bucket", { bucket: { name: "reports", ern: BUCKET } });
+
+    await esm.getBucket(BUCKET);
+
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET });
+  });
+
   it("answers the single-value actions as values", async () => {
     // An ERN, a size and a count are one string or one number; wrapping them would only mean the
     // caller unwrapping them again.

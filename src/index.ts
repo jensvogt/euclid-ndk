@@ -91,7 +91,7 @@ export type {
   ListenerCertificate,
   Route,
 } from "./dto/eag.js";
-export type { Application, Endpoint, LogLevelResult } from "./dto/eap.js";
+export type { Application, Endpoint, LogLevelResult, RestartResult } from "./dto/eap.js";
 export {
   CREATED_ATTRIBUTE,
   MODIFIED_ATTRIBUTE,

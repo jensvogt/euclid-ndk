@@ -289,6 +289,24 @@ describe("running", () => {
     assert.equal(stopped.state, STATE_RUNNING);
   });
 
+  it("cycles the pool without changing the desired state when restarting one", async () => {
+    // The one way to have every instance start again that does not leave the application stopped if the
+    // caller goes away between two calls.
+    gateway.answer("eap", "restart-application", {
+      applicationId: "order-service",
+      restarting: true,
+      instances: 3,
+    });
+
+    const restarted = await eap.restartApplication("order-service");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
+    assert.equal(restarted.restarting, true);
+    assert.equal(restarted.applicationId, "order-service");
+    // What is running when the request is answered: the manager has not stopped anything yet.
+    assert.equal(restarted.instances, 3);
+  });
+
   it("reports the instances answering for an application", async () => {
     gateway.answer("eap", "get-application", APPLICATION);
 
