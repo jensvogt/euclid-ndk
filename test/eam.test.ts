@@ -309,6 +309,33 @@ describe("operations", () => {
     session.close();
   });
 
+  it("gets one account by id, in the shape a listing uses", async () => {
+    prepared();
+    const document = { accountId: "111", name: "acme", ern: "ern:eam:account/111", description: "an account" };
+    gateway.answer("eam", "get-account", { account: document });
+    gateway.answer("eam", "list-accounts", { accounts: [document], total: 1 });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const fetched = await session.getAccount("111");
+    assert.deepEqual(gateway.last().json(), { accountId: "111" });
+    assert.equal(fetched.name, "acme");
+
+    // One parser behind both, so a field added to the account is picked up by both or by neither.
+    assert.deepEqual((await session.listAccounts()).items[0], fetched);
+    session.close();
+  });
+
+  it("gets an account by ERN when given one", async () => {
+    prepared();
+    gateway.answer("eam", "get-account", { account: { accountId: "111" } });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await session.getAccount("ern:eam:eu-central-1:111::account:111");
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), { ern: "ern:eam:eu-central-1:111::account:111" });
+  });
+
   it("gets one user group by name, with its members", async () => {
     prepared();
     gateway.answer("eam", "get-user-group", {
@@ -660,10 +687,42 @@ describe("roles and grants", () => {
     const result = await session.listGrants();
     session.close();
 
-    assert.deepEqual(gateway.last().json(), { principal: "", role: "", accountId: "" });
+    // A page size of zero is every grant, which is what this call returned before paging existed.
+    assert.deepEqual(gateway.last().json(), {
+      principal: "",
+      role: "",
+      accountId: "",
+      pageSize: 0,
+      pageIndex: 0,
+      sortColumn: "principal",
+      sortDirection: "asc",
+    });
     assert.equal(result.total, 1);
     assert.equal(result.items[0]?.role, "operator");
     assert.equal(result.items[0]?.grantId, "g-1");
+  });
+
+  it("pages grants and reports the unpaged total", async () => {
+    prepared();
+    gateway.answer("eam", "list-grants", { grants: [{ grantId: "g-1", role: "operator" }], total: 57 });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const result = await session.listGrants({ pageSize: 25, pageIndex: 2, sortColumn: "created", sortDirection: "desc" });
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), {
+      principal: "",
+      role: "",
+      accountId: "",
+      pageSize: 25,
+      pageIndex: 2,
+      sortColumn: "created",
+      sortDirection: "desc",
+    });
+    // The total counts every grant matching the filter, not the page - which is what says there is
+    // another page to ask for.
+    assert.equal(result.total, 57);
+    assert.equal(result.items.length, 1);
   });
 
   it("says why a permission check answered the way it did", async () => {

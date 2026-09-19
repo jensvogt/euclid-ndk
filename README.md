@@ -201,7 +201,7 @@ credentials file; the retry then has a fresh token to use.
 | `listUsers`, `getUser`, `register`, `deleteUser` | users |
 | `createAccessKey`, `listAccessKeys`, `deleteAccessKey` | the caller's own signing credentials |
 | `createUserGroup`, `listUserGroups`, `getUserGroup`, `deleteUserGroup`, `addUserToUserGroup`, `removeUserFromUserGroup` | groups |
-| `createAccount`, `listAccounts`, `deleteAccount` | accounts |
+| `createAccount`, `listAccounts`, `getAccount`, `deleteAccount` | accounts |
 | `createNamespace`, `listNamespaces`, `deleteNamespace` | namespaces |
 | `createRole`, `updateRole`, `getRole`, `listRoles`, `deleteRole` | what a role of this account carries |
 | `grantRole`, `revokeRole`, `listGrants` | who may do what, and where |

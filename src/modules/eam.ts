@@ -80,11 +80,22 @@ export interface ListRolesOptions extends ListOptions {
   includeBuiltin?: boolean;
 }
 
-/** Which grants to list. Giving none asks for everything granted in the account. */
+/**
+ * Which grants to list, and how to page them. Giving none asks for everything granted in the
+ * account.
+ *
+ * `pageSize` defaults to 0, which is every matching grant - not to a page, because that is what
+ * this listing returned before paging existed. The account-wide listing is the one that grows: it
+ * is one row per principal per role.
+ */
 export interface ListGrantsOptions {
   principal?: string;
   role?: string;
   accountId?: string;
+  pageSize?: number;
+  pageIndex?: number;
+  sortColumn?: string;
+  sortDirection?: string;
 }
 
 /** What {@link EuclidSession.checkPermission} answers: the verdict, and what decided it. */
@@ -718,6 +729,22 @@ export class EuclidSession {
     return toPage(await this.call("list-accounts", listPayload(options, "accountId")), "accounts", toAccount);
   }
 
+  /**
+   * One account, by account ID or by ERN.
+   *
+   * What comes back is exactly what {@link listAccounts} describes each of its own with, so this is
+   * the single-account form of a listing rather than another view of one.
+   *
+   * An account is named by its ID rather than by its name: the ID is what an ERN's fourth field
+   * carries and what every resource in the installation is scoped by, while the name is descriptive
+   * and addresses nothing. A value starting with `ern:` is taken as an ERN and names the same
+   * account. Administrator only.
+   */
+  async getAccount(accountIdOrErn: string): Promise<Account> {
+    const payload = accountIdOrErn.startsWith("ern:") ? { ern: accountIdOrErn } : { accountId: accountIdOrErn };
+    return toAccount(((await this.call("get-account", payload)) as { account?: unknown }).account);
+  }
+
   /** Deletes an account. Administrator only, and it must have no namespaces or grants left. */
   async deleteAccount(accountId: string): Promise<void> {
     await this.call("delete-account", { accountId });
@@ -843,12 +870,21 @@ export class EuclidSession {
    *
    * Note that `principal` shows that principal's *own* grants and not those of the groups it
    * belongs to, which is a different question - {@link checkPermission} answers the combined one.
+   *
+   * Paged with `pageSize`, which defaults to 0 and returns everything. The page's `total` is how
+   * many grants match the filter rather than how many the page holds, so it is what says whether
+   * there is another page. Results are ordered whether or not they are paged, because paging an
+   * unordered collection can show the same grant on two pages and never show another.
    */
   async listGrants(options: ListGrantsOptions = {}): Promise<Page<Grant>> {
     const response = await this.call("list-grants", {
       principal: options.principal ?? "",
       role: options.role ?? "",
       accountId: options.accountId ?? "",
+      pageSize: options.pageSize ?? 0,
+      pageIndex: options.pageIndex ?? 0,
+      sortColumn: options.sortColumn ?? "principal",
+      sortDirection: options.sortDirection ?? "asc",
     });
     return toPage(response, "grants", toGrant);
   }
