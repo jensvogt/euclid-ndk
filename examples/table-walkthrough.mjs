@@ -127,7 +127,7 @@ async function walk(ekv, table) {
   console.log(`\nscan, first ${scanned.items.length} of ${scanned.total}: ${JSON.stringify(pairs)}`);
   console.log("  a scan reads the table rather than a partition: fine for an export, wrong for a lookup");
 
-  const described = await ekv.describeTable(table);
+  const described = await ekv.getTable(table);
   console.log(`\n${described.name} holds ${described.itemCount} item(s)`);
 
   const tables = await ekv.listTables({ pageSize: 5 });

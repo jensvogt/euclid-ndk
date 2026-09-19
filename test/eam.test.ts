@@ -286,6 +286,57 @@ describe("operations", () => {
     assert.equal(result.items[1]?.email, "");
   });
 
+  it("gets one user by id, in the shape a listing uses", async () => {
+    prepared();
+    const document = {
+      userId: "jens",
+      ern: "ern:eam:user/jens",
+      email: "jens@example.com",
+      accountId: "000000000000",
+      region: "eu-central-1",
+      created: "2026-01-01",
+    };
+    gateway.answer("eam", "get-user", { user: document });
+    gateway.answer("eam", "list-users", { total: 1, users: [document] });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const fetched = await session.getUser("jens");
+    assert.deepEqual(gateway.last().json(), { userId: "jens" });
+    assert.equal(fetched.email, "jens@example.com");
+
+    // One parser behind both, so a field added to the user is picked up by both or by neither.
+    assert.deepEqual((await session.listUsers()).items[0], fetched);
+    session.close();
+  });
+
+  it("gets one user group by name, with its members", async () => {
+    prepared();
+    gateway.answer("eam", "get-user-group", {
+      userGroup: { name: "ops", ern: "ern:eam:user-group/ops", description: "operations", userIds: ["jens", "alice"] },
+    });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const group = await session.getUserGroup("ops");
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), { name: "ops" });
+    assert.equal(group.name, "ops");
+    assert.deepEqual(group.userIds, ["jens", "alice"]);
+  });
+
+  it("gets a user group by ERN when given one", async () => {
+    prepared();
+    gateway.answer("eam", "get-user-group", { userGroup: { name: "ops" } });
+
+    // A name and an ERN are told apart here rather than by the caller, so one method serves both -
+    // the ERN being what a grant's principal carries.
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await session.getUserGroup("ern:eam:eu-central-1:1:dev:user-group:ops");
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), { ern: "ern:eam:eu-central-1:1:dev:user-group:ops" });
+  });
+
   it("round-trips accounts, groups and namespaces", async () => {
     prepared();
     gateway.answer("eam", "create-account", { account: { accountId: "111", name: "acme", ern: "ern:eam:account/111" } });

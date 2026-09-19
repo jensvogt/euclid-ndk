@@ -128,6 +128,38 @@ describe("keys", () => {
     assert.deepEqual(Object.keys(listed.items[0]!).filter((name) => name.includes("material")), []);
   });
 
+  it("gets one key by name, and never its material", async () => {
+    gateway.answer("ekm", "get-key", {
+      key: {
+        name: "key-1",
+        ern: KEY,
+        description: "exports",
+        algorithm: "AES",
+        length: 256,
+        status: "AVAILABLE",
+        tags: { team: "finance" },
+        created: "2026-01-01",
+      },
+    });
+
+    const key = await ekm.getKey("key-1");
+
+    assert.deepEqual(gateway.last().json(), { name: "key-1" });
+    assert.deepEqual([key.name, key.ern, key.length], ["key-1", KEY, 256]);
+    assert.deepEqual(key.tags, { team: "finance" });
+    // What this returns is the key's description; the material never leaves the module, so there
+    // is no field here that could carry it.
+    assert.deepEqual(Object.keys(key).filter((name) => name.includes("material")), []);
+  });
+
+  it("gets a key by ERN when given one", async () => {
+    gateway.answer("ekm", "get-key", { key: { name: "key-1", ern: KEY } });
+
+    await ekm.getKey(KEY);
+
+    assert.deepEqual(gateway.last().json(), { ern: KEY });
+  });
+
   it("schedules a deletion rather than performing one", async () => {
     // It is the one action here that no other can undo, so the window is the chance to notice.
     gateway.answer("ekm", "delete-key", {

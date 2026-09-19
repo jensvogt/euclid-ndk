@@ -155,12 +155,24 @@ export class EuclidEkv extends ModuleClient {
    *
    * The count is counted rather than looked up, so this is not free on a large table.
    */
-  async describeTable(name: string): Promise<TableDescription> {
-    return toTableDescription(await this.call("describe-table", { name }));
+  async getTable(name: string): Promise<TableDescription> {
+    return toTableDescription(await this.call("get-table", { name }));
   }
 
   /**
-   * One page of tables, each described as {@link describeTable} would describe it.
+   * One table.
+   *
+   * @deprecated Renamed to {@link getTable}, for consistency with every other module's way of
+   * naming the call that reads one thing. This delegate sends `get-table` like its replacement
+   * does - the old `describe-table` action no longer exists server-side, so keeping it here would
+   * only produce a 4xx.
+   */
+  async describeTable(name: string): Promise<TableDescription> {
+    return this.getTable(name);
+  }
+
+  /**
+   * One page of tables, each described as {@link getTable} would describe it.
    *
    * The session's own account and namespace, and `total` counts that scope rather than the account.
    */

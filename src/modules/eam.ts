@@ -598,6 +598,20 @@ export class EuclidSession {
     return toUser((response as { user?: unknown }).user);
   }
 
+  /**
+   * One user, by the id they are known by.
+   *
+   * What comes back is exactly what {@link listUsers} describes each of its own with, so this is
+   * the single-user form of a listing rather than another view of one.
+   *
+   * The id rather than the ERN, because that is what everything else names a user with: a grant's
+   * principal, an application's technical identity, the audit trail's `userId` column. A user of
+   * another account is a 404, the way a listing would not have shown them.
+   */
+  async getUser(userId: string): Promise<User> {
+    return toUser(((await this.call("get-user", { userId })) as { user?: unknown }).user);
+  }
+
   /** Deletes a user. */
   async deleteUser(userId: string): Promise<void> {
     await this.call("delete-user", { userId });
@@ -655,6 +669,22 @@ export class EuclidSession {
   /** One page of user groups, and how many exist in total. */
   async listUserGroups(options: ListOptions = {}): Promise<Page<UserGroup>> {
     return toPage(await this.call("list-user-groups", listPayload(options, "name")), "userGroups", toUserGroup);
+  }
+
+  /**
+   * One user group, by name or by ERN, with its members.
+   *
+   * What comes back is exactly what {@link listUserGroups} describes each of its own with, member
+   * ids included, so this is the single-group form of a listing rather than another view of one.
+   *
+   * A value starting with `ern:` is taken as an ERN; anything else is a name. Groups are
+   * installation-wide rather than scoped to an account, so a name identifies one without further
+   * qualification, and the ERN is accepted only because that is what a grant's principal carries.
+   */
+  async getUserGroup(nameOrErn: string): Promise<UserGroup> {
+    const payload = nameOrErn.startsWith("ern:") ? { ern: nameOrErn } : { name: nameOrErn };
+    const response = await this.call("get-user-group", payload);
+    return toUserGroup((response as { userGroup?: unknown }).userGroup);
   }
 
   /** Adds a user to a group. Both are ERNs. */

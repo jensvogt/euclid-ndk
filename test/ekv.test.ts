@@ -159,15 +159,15 @@ describe("tables", () => {
     assert.deepEqual([table.sortKey, table.sortKeyType], ["", ""]);
   });
 
-  it("describes, lists and deletes them", async () => {
-    gateway.answer("ekv", "describe-table", { name: TABLE, partitionKey: "userId", itemCount: 42 });
+  it("gets, lists and deletes them", async () => {
+    gateway.answer("ekv", "get-table", { name: TABLE, partitionKey: "userId", itemCount: 42 });
     gateway.answer("ekv", "list-tables", {
       total: 2,
       tables: [{ name: TABLE, partitionKey: "userId", sortKey: "startedAt", itemCount: 42 }, { name: "profiles" }],
     });
     gateway.answer("ekv", "delete-table", { deletedItems: 42 });
 
-    assert.equal((await ekv.describeTable(TABLE)).itemCount, 42);
+    assert.equal((await ekv.getTable(TABLE)).itemCount, 42);
     assert.deepEqual(gateway.last().json(), { name: TABLE });
 
     const listed = await ekv.listTables({ prefix: "ses", pageSize: 25, sortDirection: "desc" });
@@ -185,6 +185,16 @@ describe("tables", () => {
 
     assert.equal(await ekv.deleteTable(TABLE), 42);
     assert.deepEqual(gateway.last().json(), { name: TABLE });
+  });
+
+  it("sends the new action from the deprecated describeTable", async () => {
+    gateway.answer("ekv", "get-table", { name: TABLE, itemCount: 42 });
+
+    // Kept for callers that still name it the old way, but describe-table no longer exists
+    // server-side - so the delegate has to send get-table rather than what it is named after.
+    assert.equal((await ekv.describeTable(TABLE)).itemCount, 42);
+
+    assert.equal(gateway.last().action, "get-table");
   });
 });
 

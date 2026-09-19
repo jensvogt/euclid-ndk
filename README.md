@@ -198,9 +198,9 @@ credentials file; the retry then has a fresh token to use.
 
 | Method | Action |
 | --- | --- |
-| `listUsers`, `register`, `deleteUser` | users |
+| `listUsers`, `getUser`, `register`, `deleteUser` | users |
 | `createAccessKey`, `listAccessKeys`, `deleteAccessKey` | the caller's own signing credentials |
-| `createUserGroup`, `listUserGroups`, `deleteUserGroup`, `addUserToUserGroup`, `removeUserFromUserGroup` | groups |
+| `createUserGroup`, `listUserGroups`, `getUserGroup`, `deleteUserGroup`, `addUserToUserGroup`, `removeUserFromUserGroup` | groups |
 | `createAccount`, `listAccounts`, `deleteAccount` | accounts |
 | `createNamespace`, `listNamespaces`, `deleteNamespace` | namespaces |
 | `createRole`, `updateRole`, `getRole`, `listRoles`, `deleteRole` | what a role of this account carries |
@@ -520,7 +520,7 @@ euclid-jdk send.
 
 | Method | Action |
 | --- | --- |
-| `createKey`, `listKeys`, `setKeyDescription`, `addKeyTag`, `deleteKeyTag` | keys |
+| `createKey`, `listKeys`, `getKey`, `setKeyDescription`, `addKeyTag`, `deleteKeyTag` | keys |
 | `revokeKey`, `deleteKey` | taking a key out of use, and out of existence |
 | `encrypt`, `decrypt` | using one |
 | `importCertificate`, `createCertificate`, `getCertificate`, `listCertificates`, `deleteCertificate` | the certificates a deployment serves |
@@ -557,7 +557,7 @@ months later it is the only thing that answers whether the key can be deleted.
 
 | Method | Action |
 | --- | --- |
-| `createTable`, `describeTable`, `listTables`, `deleteTable` | tables |
+| `createTable`, `getTable`, `listTables`, `deleteTable` | tables |
 | `putItem`, `getItem`, `findItem`, `deleteItem` | one item at a time |
 | `query` | the items of one partition, in sort-key order |
 | `scan` | a table's items without regard to their key |
