@@ -231,6 +231,29 @@ describe("buckets", () => {
     assert.deepEqual([result.count, result.background, result.jobId], [40000, true, "job-7"]);
   });
 
+  it("aborts an upload and says what was discarded", async () => {
+    gateway.answer("esm", "abort-upload", {
+      uploadId: "upload-1",
+      bucketErn: BUCKET,
+      key: "onix/big.xml",
+      parts: 12,
+      objectRemoved: true,
+    });
+
+    const result = await esm.abortUpload("upload-1");
+
+    assert.deepEqual(gateway.last().json(), { uploadId: "upload-1" });
+    assert.deepEqual([result.key, result.parts, result.objectRemoved], ["onix/big.xml", 12, true]);
+  });
+
+  it("leaves the published object when an abandoned re-upload is aborted", async () => {
+    // The row is the previous version - still published, still readable - so it is not removed,
+    // and the difference is what a caller cleaning up after a failure has to be able to see.
+    gateway.answer("esm", "abort-upload", { uploadId: "upload-1", parts: 3, objectRemoved: false });
+
+    assert.equal((await esm.abortUpload("upload-1")).objectRemoved, false);
+  });
+
   it("purges a bucket in the background", async () => {
     // Emptying a bucket can take minutes, so the server writes the work down and answers at once.
     gateway.answer("esm", "purge-bucket", { ern: BUCKET, async: true, jobId: "job-42", objects: 120000 }, 202);

@@ -157,6 +157,7 @@ export type {
 export type {
   Bucket,
   BucketEvent,
+  AbortUploadResult,
   CreateBucketResult,
   CreateDownloadResult,
   CreateUploadResult,

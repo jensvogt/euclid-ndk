@@ -52,9 +52,11 @@ import {
   type PurgeBucketResult,
   type RenameBucketResult,
   type SetBucketInternalResult,
+  type AbortUploadResult,
   type StoredObject,
   type TouchObjectResult,
   type Bucket,
+  toAbortUploadResult,
   toBucket,
   toBucketEvent,
   toCreateBucketResult,
@@ -802,6 +804,25 @@ export class EuclidEsm extends ModuleClient {
     return toStoredObject(
       await this.#callWithRetry("complete-upload", { uploadId }, attributeHeaders(options)),
     );
+  }
+
+  /**
+   * Throws away a multipart upload that will not be finished.
+   *
+   * Discards the parts staged under `uploadId` and - for a first upload - the object row that was
+   * seeded for bytes which never arrived. A *re-upload*'s object row is left exactly as it is: that
+   * row is the previous version of the object, still published and still readable, and not this
+   * upload's to delete. {@link AbortUploadResult.objectRemoved} says which happened.
+   *
+   * {@link uploadFile} does not need this - it completes or it fails within one call. What needs it
+   * is an upload nothing is driving any more: one whose client was killed, or one the API gateway
+   * abandoned. The id comes from a log or from whatever started the upload, which is why this takes
+   * one rather than being folded into the multipart helpers.
+   *
+   * An upload that has already completed answers 404, because there is no longer any such upload.
+   */
+  async abortUpload(uploadId: string): Promise<AbortUploadResult> {
+    return toAbortUploadResult(await this.call("abort-upload", { uploadId }));
   }
 
   /**

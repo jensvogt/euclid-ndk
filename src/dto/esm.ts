@@ -132,6 +132,25 @@ export interface DeleteBucketResult {
  * names the job doing it. That job outlives the instance that started it - one stopped by the
  * autoscaler, or lost to a crash, leaves a job another instance picks up and carries on.
  */
+/** What an abandoned upload was, and what became of the object it was writing. */
+export interface AbortUploadResult {
+  uploadId: string;
+  bucketErn: string;
+  key: string;
+  /** How many staged parts were thrown away. */
+  parts: number;
+  /**
+   * Whether the object row at that key went with the upload.
+   *
+   * True for a first upload, whose row described bytes that never arrived. False for a re-upload,
+   * where the row is the previous version - still published, still readable, and not this upload's
+   * to delete. Worth reading rather than assuming: "the upload is gone" and "the object is gone"
+   * are different outcomes, and a caller cleaning up after a failure needs to know which one they
+   * got.
+   */
+  objectRemoved: boolean;
+}
+
 export interface PurgeBucketResult {
   ern: string;
   count: number;
@@ -305,6 +324,16 @@ export function toDeleteBucketResult(document: unknown): DeleteBucketResult {
     count: number(document, "objects"),
     jobId: text(document, "jobId"),
     background: flag(document, "async"),
+  };
+}
+
+export function toAbortUploadResult(document: unknown): AbortUploadResult {
+  return {
+    uploadId: text(document, "uploadId"),
+    bucketErn: text(document, "bucketErn"),
+    key: text(document, "key"),
+    parts: number(document, "parts"),
+    objectRemoved: flag(document, "objectRemoved"),
   };
 }
 

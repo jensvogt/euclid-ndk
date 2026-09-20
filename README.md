@@ -266,7 +266,7 @@ calls scopes the second one.
 | `touchObject` | re-announce objects already stored, for a listener that missed their events |
 | `addObjectAttribute`, `setObjectAttribute`, `listObjectAttributes`, `deleteObjectAttribute` | user-defined attributes |
 | `subscribe`, `listSubscriptions`, `unsubscribe`, `parseBucketEvent` | a bucket's events, into a queue or a topic |
-| `putObject`, `getObject`, `uploadFile`, `downloadFile` | the object's bytes themselves |
+| `putObject`, `getObject`, `uploadFile`, `downloadFile`, `abortUpload` | the object's bytes themselves |
 | `metrics` | ESM's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
