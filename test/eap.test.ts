@@ -142,6 +142,22 @@ describe("deploying", () => {
     assert.equal(application.userId, "app-order-service");
   });
 
+  it("copies an application into another namespace", async () => {
+    gateway.answer("eap", "copy-application", APPLICATION);
+
+    await eap.copyApplication("order-service", "production");
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", targetNamespace: "production" });
+
+    // Absent rather than empty when unnamed: the server reads an absent targetApplicationId as
+    // "the original's name", so sending "" would be asking for an application with no name.
+    await eap.copyApplication("order-service", "development", "order-service-next");
+    assert.deepEqual(gateway.last().json(), {
+      applicationId: "order-service",
+      targetNamespace: "development",
+      targetApplicationId: "order-service-next",
+    });
+  });
+
   it("sends only what an update was given", async () => {
     gateway.answer("eap", "update-application", APPLICATION);
 

@@ -238,6 +238,38 @@ export class EuclidEap extends ModuleClient {
   }
 
   /**
+   * Defines the same application again in another namespace, leaving the original alone and running.
+   *
+   * The sibling of moving one with {@link EuclidEap.updateApplication}'s `namespace`, and the difference is
+   * the point: a move takes the definition with it, so what ran in the old namespace stops running there. A
+   * copy is how a build is promoted - development to integration, integration to production - while the
+   * namespace it came from goes on serving.
+   *
+   * The copy runs the same artifact, down to the checksum, so it is the same bytes rather than a rebuild
+   * that happens to share a version. It is given its own runtime name and its own technical principal with
+   * its own access key, both being installation-wide and unshareable, so revoking the copy's credentials
+   * leaves the original running. An application told to run as a named user keeps that user.
+   *
+   * What it may reach is re-resolved rather than copied: a bucket or queue ERN carries the namespace it was
+   * resolved in, so copying the list would point the new application at the old namespace's data. The same
+   * names are looked up in the target namespace, and one with no counterpart there fails the copy with HTTP
+   * 404 rather than quietly leaving the application with less access than the original.
+   *
+   * The copy is created stopped whatever the original is doing, and refuses with HTTP 409 if an application
+   * of that name is already defined in the target namespace.
+   *
+   * @param applicationId the application to copy, in the namespace this session works in
+   * @param targetNamespace the namespace to copy it into; it has to exist already
+   * @param targetApplicationId the name the copy is defined under; the original's unless given, which is how
+   *   an application is copied beside itself within one namespace
+   */
+  async copyApplication(applicationId: string, targetNamespace: string, targetApplicationId = ""): Promise<Application> {
+    const payload: Record<string, unknown> = { applicationId, targetNamespace };
+    if (targetApplicationId) payload["targetApplicationId"] = targetApplicationId;
+    return this.#application("copy-application", payload);
+  }
+
+  /**
    * Points an application at a new build of itself.
    *
    * The artifact defaults to the one already deployed - which is what a rebuilt artifact stored under the
