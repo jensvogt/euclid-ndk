@@ -182,7 +182,7 @@ export interface SessionOptions {
  * ```
  */
 export class EuclidEam {
-  #baseUrl: string;
+  readonly #baseUrl: string;
   #loginPath = "/";
   #username: string | null = null;
   #email: string | null = null;
@@ -383,7 +383,7 @@ export class EuclidEam {
   async #cachedSession(): Promise<EuclidSession | null> {
     if (!this.#useCache) return null;
     const cached = await loadCredentials();
-    if (cached === null || !cached.token || cached.baseUrl !== this.#baseUrl) return null;
+    if (!cached?.token || cached.baseUrl !== this.#baseUrl) return null;
     if (!isTokenValid(cached.token)) return null;
 
     return new EuclidSession({
@@ -626,6 +626,52 @@ export class EuclidSession {
   /** Deletes a user. */
   async deleteUser(userId: string): Promise<void> {
     await this.call("delete-user", { userId });
+  }
+
+  // -- passwords -------------------------------------------------------------------------------
+  //
+  // One server action ("change-password") behind two methods, because it does two things and which
+  // of them it does is decided by whether a user is named. Wrapped as two so that neither can be
+  // reached by accident: a reset is not a change with the old password left out, and a change is
+  // not a reset aimed at yourself.
+
+  /**
+   * Changes this session's own password.
+   *
+   * The old password is what proves the change may be made - a token alone is not enough, so one
+   * left behind cannot be turned into the account itself.
+   *
+   * This session keeps working: its bearer token is verified against the server's signing secret
+   * rather than against the password, so it stays valid until it expires, and the new password is
+   * what the next login wants. Access keys are untouched.
+   *
+   * @throws {EuclidServiceError} if the old password is wrong (403), or if this user does not log
+   * in with a password at all (409) - a federated identity or an application's technical principal.
+   */
+  async changePassword(oldPassword: string, newPassword: string): Promise<void> {
+    // No userId: the server reads an absent one as "mine", which is all this method means.
+    await this.call("change-password", { oldPassword, newPassword });
+  }
+
+  /**
+   * Resets another user's password. Administrator only.
+   *
+   * No old password, because an administrator is not supposed to know one; being an administrator
+   * is the proof instead.
+   *
+   * Aiming this at yourself throws rather than reaching the server, which reads a request naming
+   * yourself as the *change* and would refuse it for the old password it did not get - a confusing
+   * way to learn you wanted {@link changePassword}.
+   *
+   * @throws {Error} if `userId` names this session's own user.
+   */
+  async resetPassword(userId: string, newPassword: string): Promise<void> {
+    if (userId === this.userId) {
+      throw new Error(
+        "resetPassword() is for another user's password; use changePassword(oldPassword, newPassword) for your own",
+      );
+    }
+    await this.call("change-password", { userId, newPassword });
   }
 
   // -- namespace scoping -----------------------------------------------------------------------
