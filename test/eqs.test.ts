@@ -64,6 +64,39 @@ function requestsFor(action: string) {
 
 describe("queues", () => {
 
+  it("sends a batch and names what it would not send", async () => {
+    gateway.answer("eqs", "send-message-batch", {
+      ern: "ern:queue/orders",
+      asked: 3,
+      sent: 2,
+      messageIds: ["id-0", "id-2"],
+      failed: [{ index: 1, reason: "message is 2048 bytes, and this queue accepts 1024" }],
+    });
+
+    const result = await eqs.sendMessageBatch("orders", [
+      { body: "first" },
+      { body: "second" },
+      { body: "third", priority: "HIGH" },
+    ]);
+
+    assert.equal(result.asked, 3);
+    assert.equal(result.sent, 2);
+    assert.deepEqual(result.messageIds, ["id-0", "id-2"]);
+    assert.equal(result.failed.length, 1);
+    // The index is the only thing mapping a rejection back to the message the caller sent.
+    assert.equal(result.failed[0].index, 1);
+
+    // An unset field is left out of the entry entirely - an empty priority would override a queue
+    // configured otherwise.
+    const body = gateway.last().json() as { ern: string; messages: Record<string, unknown>[] };
+    assert.equal(body.ern, "orders");
+    assert.equal(body.messages.length, 3);
+    assert.equal(body.messages[0]["body"], "first");
+    assert.ok(!("priority" in body.messages[0]));
+    assert.ok(!("attributes" in body.messages[0]));
+    assert.equal(body.messages[2]["priority"], "HIGH");
+  });
+
   it("describes one queue the way a listing describes each", async () => {
     gateway.answer("eqs", "get-queue", {
       queue: {

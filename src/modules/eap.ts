@@ -125,6 +125,16 @@ export interface CreateApplicationOptions {
  * applications carried a namespace can acquire one without being deleted and made again - see
  * {@link EuclidEap.updateApplication}.
  */
+/**
+ * The instance bounds {@link EuclidEap.scaleApplication} sets. Either may be left out, which leaves that
+ * bound as it stands - so a ceiling can be raised without touching the floor. The same number for both pins
+ * the pool at that size and leaves the autoscaler nothing to decide.
+ */
+export interface ScaleApplicationBounds {
+  minInstances?: number;
+  maxInstances?: number;
+}
+
 export interface UpdateApplicationChanges {
   runtime?: string;
   artifact?: string;
@@ -267,6 +277,34 @@ export class EuclidEap extends ModuleClient {
     const payload: Record<string, unknown> = { applicationId, targetNamespace };
     if (targetApplicationId) payload["targetApplicationId"] = targetApplicationId;
     return this.#application("copy-application", payload);
+  }
+
+  /**
+   * Changes how many instances an application runs, without restarting the ones it has.
+   *
+   * {@link EuclidEap.updateApplication} can set the same two fields, but it writes the whole definition and
+   * stamps the modification date - and the manager restarts a pool whose application changed since it started
+   * it. Scaling that way stops every running instance and starts it again, which is the opposite of what
+   * asking for capacity means and worst at the moment it is asked for.
+   *
+   * What is set is the range the autoscaler works within, not a count: the manager scales toward it on its
+   * next reconcile, adding instances one at a time and stopping idle ones as the load allows. Nothing is
+   * started or stopped by this call. The same number for both bounds pins the pool at that size.
+   *
+   * A bound left undefined is left as it stands, so a ceiling can be raised without touching the floor. The
+   * two are checked against each other as they *will* stand rather than as they are, so raising only the
+   * floor fails with HTTP 400 when it would pass the stored ceiling. A floor of zero is refused for its own
+   * reason: an application desired RUNNING with no instances reads everywhere as a pool that failed to
+   * start, and {@link EuclidEap.stopApplication} is how one is taken out of service.
+   *
+   * @param applicationId the application to scale
+   * @param bounds the floor and ceiling to set; either may be left out to leave it as it stands
+   */
+  async scaleApplication(applicationId: string, bounds: ScaleApplicationBounds = {}): Promise<Application> {
+    const payload: Record<string, unknown> = { applicationId };
+    if (bounds.minInstances !== undefined) payload["minInstances"] = bounds.minInstances;
+    if (bounds.maxInstances !== undefined) payload["maxInstances"] = bounds.maxInstances;
+    return this.#application("scale-application", payload);
   }
 
   /**

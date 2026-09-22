@@ -10,7 +10,7 @@
  */
 
 import { toVariant, toVariantMap, type Variant } from "./com.js";
-import { documents, flag, number, object, stringMap, text } from "./json.js";
+import { documents, flag, number, object, stringMap, strings, text } from "./json.js";
 
 // -- resources -----------------------------------------------------------------------------------
 
@@ -183,6 +183,35 @@ export interface RedriveDlqResult {
   note: string;
 }
 
+/**
+ * One message a batch would not send, and why.
+ *
+ * `index` is where the message sat in the list you sent. The server minted nothing for a message it did not
+ * accept, so the position is the only thing the two sides share.
+ */
+export interface SendBatchFailure {
+  index: number;
+  reason: string;
+}
+
+/**
+ * What a {@link EuclidEqs.sendMessageBatch} did.
+ *
+ * Counts, the ids of what went in request order, and the failures named one by one. `asked` always equals
+ * `sent` plus `failed.length`.
+ *
+ * The failure list is the part that differs from every other multi-item call in euclid, which only counts. A
+ * delete that skipped a key removed something already gone; a send that skipped a message dropped it, and a
+ * producer holding "97 of 100" cannot act on that without knowing which three to send again.
+ */
+export interface SendBatchResult {
+  ern: string;
+  asked: number;
+  sent: number;
+  messageIds: string[];
+  failed: SendBatchFailure[];
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toQueue(document: unknown): Queue {
@@ -301,6 +330,23 @@ export function toQueueStatusResult(document: unknown): QueueStatusResult {
 
 export function toRedriveTarget(document: unknown): RedriveTarget {
   return { queueErn: text(document, "queueErn"), messages: number(document, "messages") };
+}
+
+export function toSendBatchFailure(document: unknown): SendBatchFailure {
+  return {
+    index: number(document, "index"),
+    reason: text(document, "reason"),
+  };
+}
+
+export function toSendBatchResult(document: unknown): SendBatchResult {
+  return {
+    ern: text(document, "ern"),
+    asked: number(document, "asked"),
+    sent: number(document, "sent"),
+    messageIds: strings(document, "messageIds"),
+    failed: documents(document, "failed").map(toSendBatchFailure),
+  };
 }
 
 export function toRedriveDlqResult(document: unknown): RedriveDlqResult {

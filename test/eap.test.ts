@@ -158,6 +158,22 @@ describe("deploying", () => {
     });
   });
 
+  it("scales without sending a bound it was not given", async () => {
+    gateway.answer("eap", "scale-application", APPLICATION);
+
+    // A ceiling raised on its own must not carry a floor with it - an absent bound is what tells
+    // the server to leave that one as it stands.
+    await eap.scaleApplication("order-service", { maxInstances: 16 });
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", maxInstances: 16 });
+
+    await eap.scaleApplication("order-service", { minInstances: 4 });
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", minInstances: 4 });
+
+    // Both together pins the pool, which is a normal thing to ask for.
+    await eap.scaleApplication("order-service", { minInstances: 2, maxInstances: 2 });
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", minInstances: 2, maxInstances: 2 });
+  });
+
   it("sends only what an update was given", async () => {
     gateway.answer("eap", "update-application", APPLICATION);
 

@@ -45,6 +45,8 @@ import {
   type QueueMetadata,
   type QueueStatusResult,
   type RedriveDlqResult,
+  type SendBatchResult,
+  toSendBatchResult,
 } from "../dto/eqs.js";
 import type { EuclidHttpClient } from "../http/client.js";
 import { listPayload, ModuleClient, pagePayload, type ListOptions, type PageOptions } from "./base.js";
@@ -137,6 +139,17 @@ export interface ListQueuesOptions extends ListOptions {
 }
 
 /** What a message carries besides its body. */
+/**
+ * One message within a {@link EuclidEqs.sendMessageBatch} - the same fields a single send takes, minus the
+ * queue. A batch names the queue once.
+ */
+export interface SendMessageBatchEntry {
+  body: string;
+  attributes?: Record<string, VariantInput>;
+  systemAttributes?: Record<string, VariantInput>;
+  priority?: string;
+}
+
 export interface SendMessageOptions {
   /** The sender's own attributes, which come back on the received message. */
   attributes?: Record<string, VariantInput>;
@@ -412,6 +425,43 @@ export class EuclidEqs extends ModuleClient {
     }
     if (options.priority) payload["priority"] = options.priority;
     return this.textOf("send-message", payload, "messageId");
+  }
+
+  /**
+   * Sends several messages to one queue in a single call.
+   *
+   * Each entry carries the same fields {@link sendMessage} takes for one message; the queue is named once, so
+   * every message in a batch goes to the same queue. The saving over calling sendMessage in a loop is mostly
+   * in the database rather than the round trips: the whole batch is written in one insert, and the queue's
+   * counters are adjusted once instead of once per message.
+   *
+   * A message that cannot be sent does not stop the others. The result says how many were asked for and how
+   * many went, lists the ids of those that went in request order, and names each rejection by its position in
+   * `messages` - so a producer retries exactly those rather than the whole batch and duplicates everything
+   * else.
+   *
+   * Every message being rejected still resolves rather than throwing: the request was well formed and has
+   * been answered with a reason for each. Check `sent`, not the absence of a rejection.
+   *
+   * An empty batch, or one over the installation's `euclid.modules.eqs.max-batch-size`, is refused with HTTP
+   * 400 - those are mistakes in the request rather than in a message, so there is no partial outcome.
+   */
+  async sendMessageBatch(queueErn: string, messages: readonly SendMessageBatchEntry[]): Promise<SendBatchResult> {
+    const entries = messages.map((message) => {
+      const entry: Record<string, unknown> = { body: message.body };
+      if (message.attributes !== undefined && Object.keys(message.attributes).length > 0) {
+        entry["attributes"] = variantMapToJson(message.attributes);
+      }
+      if (message.systemAttributes !== undefined && Object.keys(message.systemAttributes).length > 0) {
+        entry["systemAttributes"] = variantMapToJson(message.systemAttributes);
+      }
+      // Sent only when named: an empty priority is what tells the server to use the queue's own, and
+      // spelling it out here would override a queue configured otherwise.
+      if (message.priority) entry["priority"] = message.priority;
+      return entry;
+    });
+
+    return toSendBatchResult(await this.call("send-message-batch", { ern: queueErn, messages: entries }));
   }
 
   /**
