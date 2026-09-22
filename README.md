@@ -199,6 +199,7 @@ credentials file; the retry then has a fresh token to use.
 | Method | Action |
 | --- | --- |
 | `listUsers`, `getUser`, `register`, `deleteUser` | users |
+| `changePassword`, `resetPassword` | your own password, given the current one; or somebody else's, as an administrator |
 | `createAccessKey`, `listAccessKeys`, `deleteAccessKey` | the caller's own signing credentials |
 | `createUserGroup`, `listUserGroups`, `getUserGroup`, `deleteUserGroup`, `addUserToUserGroup`, `removeUserFromUserGroup` | groups |
 | `createAccount`, `listAccounts`, `getAccount`, `deleteAccount` | accounts |

@@ -403,6 +403,59 @@ describe("operations", () => {
     assert.deepEqual(gateway.last().json(), { accessKeyId: "AKIANEW" });
   });
 
+  it("changes your own password without naming anybody", async () => {
+    prepared();
+    gateway.answer("eam", "change-password", {});
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await session.changePassword("old-one", "new-one");
+    session.close();
+
+    // No userId at all: an absent one is what tells the server this is the change, not the reset.
+    assert.deepEqual(gateway.last().json(), { oldPassword: "old-one", newPassword: "new-one" });
+  });
+
+  it("resets somebody else's password by naming them, and sends no old one", async () => {
+    prepared();
+    gateway.answer("eam", "change-password", {});
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await session.resetPassword("jill", "new-one");
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), { userId: "jill", newPassword: "new-one" });
+  });
+
+  // The server reads a request naming yourself as the change, and would refuse this one for the
+  // old password it did not get - a confusing way to learn you wanted the other method.
+  it("refuses to reset your own password before anything is sent", async () => {
+    prepared();
+    gateway.answer("eam", "change-password", {});
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await assert.rejects(() => session.resetPassword(session.userId, "new-one"), /another user's password/);
+    session.close();
+
+    assert.equal(gateway.last().action, "login");
+  });
+
+  // 403 rather than 401, so a typo does not read as an expired session.
+  it("reports a wrong old password as a service error", async () => {
+    prepared();
+    gateway.answer("eam", "change-password", { error: "The old password is not correct" }, 403);
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await assert.rejects(
+      () => session.changePassword("wrong", "new-one"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.target, error.action, error.status], ["eam", "change-password", 403]);
+        assert.equal(error.reason, "The old password is not correct");
+        return true;
+      },
+    );
+    session.close();
+  });
+
   it("checks the status even of the actions that answer with nothing", async () => {
     prepared();
     gateway.answer("eam", "delete-user", { error: "User not found" }, 404);
