@@ -153,6 +153,8 @@ export type {
   QueueStatusResult,
   RedriveDlqResult,
   RedriveTarget,
+  SendBatchFailure,
+  SendBatchResult,
 } from "./dto/eqs.js";
 export type {
   Bucket,
@@ -227,6 +229,7 @@ export {
   STATE_RUNNING,
   STATE_STOPPED,
   type CreateApplicationOptions,
+  type ScaleApplicationBounds,
   type UpdateApplicationChanges,
 } from "./modules/eap.js";
 export {
@@ -273,6 +276,7 @@ export {
   type ListQueuesOptions,
   type PurgeAllQueuesOptions,
   type ReceiveMessagesOptions,
+  type SendMessageBatchEntry,
   type SendMessageOptions,
 } from "./modules/eqs.js";
 export {
@@ -319,7 +323,7 @@ export {
 } from "./modules/esm.js";
 
 /** The version this package was published as. */
-export const VERSION = "0.12.0";
+export const VERSION = "0.13.0";
 
 /** Options {@link Euclid.login} passes through to the builder, for the case that needs no builder. */
 export interface LoginOptions {

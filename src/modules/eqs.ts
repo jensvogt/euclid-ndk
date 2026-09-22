@@ -138,7 +138,6 @@ export interface ListQueuesOptions extends ListOptions {
   includeInternal?: boolean;
 }
 
-/** What a message carries besides its body. */
 /**
  * One message within a {@link EuclidEqs.sendMessageBatch} - the same fields a single send takes, minus the
  * queue. A batch names the queue once.
@@ -150,6 +149,7 @@ export interface SendMessageBatchEntry {
   priority?: string;
 }
 
+/** What a message carries besides its body. */
 export interface SendMessageOptions {
   /** The sender's own attributes, which come back on the received message. */
   attributes?: Record<string, VariantInput>;

@@ -350,7 +350,7 @@ checks `listSubscriptions` first.
 | `addQueueTag`, `setQueueTag`, `deleteQueueTag` | queue tags |
 | `stopQueue`, `startQueue`, `setQueueVisibility` | what a queue hands out, and for how long |
 | `setQueueDelay`, `setQueueMaxMessageLength` | how long a send is held back, and how large it may be |
-| `sendMessage`, `receiveMessages`, `receiveAllMessages`, `deleteMessage`, `deleteMessageById` | messages |
+| `sendMessage`, `sendMessageBatch`, `receiveMessages`, `receiveAllMessages`, `deleteMessage`, `deleteMessageById` | messages |
 | `listMessages`, `getMessageCount`, `getMessageMetadata` | inspecting a queue without consuming it |
 | `getMessageAttribute`, `setMessageAttribute`, `setMessageVisibility` | one message at a time |
 | `redriveDlq` | moving a dead letter queue's messages back where they came from |
@@ -600,8 +600,8 @@ while `scan` reads the table, which is right for an export and wrong for a looku
 
 | Method | Action |
 | --- | --- |
-| `createApplication`, `updateApplication`, `redeployApplication`, `deleteApplication` | deploying |
-| `startApplication`, `stopApplication`, `listApplications`, `getApplication` | running |
+| `createApplication`, `updateApplication`, `copyApplication`, `redeployApplication`, `deleteApplication` | deploying |
+| `startApplication`, `stopApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
 | `setLogLevel`, `resetLogLevel` | what one application logs, without restarting it |
 | `metrics` | EAP's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |

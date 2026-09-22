@@ -110,6 +110,16 @@ export interface CreateApplicationOptions {
 }
 
 /**
+ * The instance bounds {@link EuclidEap.scaleApplication} sets. Either may be left out, which leaves that
+ * bound as it stands - so a ceiling can be raised without touching the floor. The same number for both pins
+ * the pool at that size and leaves the autoscaler nothing to decide.
+ */
+export interface ScaleApplicationBounds {
+  minInstances?: number;
+  maxInstances?: number;
+}
+
+/**
  * What an update changes - and only what it names.
  *
  * The distinction the server draws is between a field being sent and not being sent, rather than between
