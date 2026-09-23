@@ -160,6 +160,32 @@ export class EuclidEkv extends ModuleClient {
   }
 
   /**
+   * Whether a table exists.
+   *
+   * Three answers, not two. `true` and `false` are the ones a caller expects; the third is a
+   * {@link EuclidServiceError}, and it is the one that matters. An expired session, an unreachable
+   * gateway or a refused permission is not the same as "not there", and resolving to `false` for
+   * them would have callers deleting and recreating things over an outage. Only HTTP 404 - the
+   * answer that actually says it is absent - becomes `false`; everything else rejects.
+   *
+   * Costs a query on a large table: `get-table` counts the table's items to answer, and EKV has
+   * no by-name lookup that does not.
+   *
+   * @param name name of the table.
+   */
+  async existsTable(name: string): Promise<boolean> {
+    try {
+      await this.getTable(name);
+    } catch (error) {
+      if (error instanceof EuclidServiceError && error.status === 404) {
+        return false;
+      }
+      throw error;
+    }
+    return true;
+  }
+
+  /**
    * One table.
    *
    * @deprecated Renamed to {@link getTable}, for consistency with every other module's way of

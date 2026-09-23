@@ -200,6 +200,29 @@ describe("how ESS behaves", () => {
     );
   });
 
+  it("asks the listing and never the value when checking a secret exists", async () => {
+    // The point of the method. get-secret answers with the decrypted value, so an existence check
+    // built on it would need permission to read the password and would leave an audit entry saying
+    // somebody did. This asks list-secrets, which never returns a value.
+    gateway.answer("ess", "list-secrets", {
+      secrets: [{ name: "db-password" }, { name: "db-password-old" }],
+      total: 2,
+    });
+
+    assert.equal(await ess.existsSecret("db-password"), true);
+
+    const sent = gateway.last().json() as { prefix: string; pageSize: number };
+    assert.equal(sent.prefix, "db-password");
+    // The whole matching page, or a longer name could crowd the exact one off page one.
+    assert.equal(sent.pageSize, 0);
+  });
+
+  it("matches a secret name exactly rather than by prefix", async () => {
+    gateway.answer("ess", "list-secrets", { secrets: [{ name: "db-password-old" }], total: 1 });
+
+    assert.equal(await ess.existsSecret("db-password"), false);
+  });
+
   it("answers metrics unparsed and reaches unwrapped actions", async () => {
     gateway.answer("ess", "get-metrics", { items: [{ name: "ess-secrets", value: 3 }] });
     gateway.answer("ess", "some-future-action", { ok: true });

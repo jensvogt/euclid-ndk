@@ -291,6 +291,31 @@ export class EuclidEsm extends ModuleClient {
     return this.textOf("get-bucket-ern", { name }, "ern");
   }
 
+  /**
+   * Whether a bucket exists.
+   *
+   * Three answers, not two. `true` and `false` are the ones a caller expects; the third is a
+   * {@link EuclidServiceError}, and it is the one that matters. An expired session, an unreachable
+   * gateway or a refused permission is not the same as "not there", and resolving to `false` for
+   * them would have callers deleting and recreating things over an outage. Only HTTP 404 - the
+   * answer that actually says it is absent - becomes `false`; everything else rejects.
+   *
+   * Asks about the bucket, not about anything in it: an empty bucket exists.
+   *
+   * @param name name of the bucket, resolved in the session's account and namespace.
+   */
+  async existsBucket(name: string): Promise<boolean> {
+    try {
+      await this.getBucketErn(name);
+    } catch (error) {
+      if (error instanceof EuclidServiceError && error.status === 404) {
+        return false;
+      }
+      throw error;
+    }
+    return true;
+  }
+
   /** How many bytes a bucket holds. */
   async getBucketSize(ern: string): Promise<number> {
     return this.numberOf("get-bucket-size", { ern }, "size");

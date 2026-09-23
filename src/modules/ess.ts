@@ -96,6 +96,32 @@ export class EuclidEss extends ModuleClient {
     return toPage(await this.call("list-secrets", listPayload(options, "name")), "secrets", toSecret);
   }
 
+  /**
+   * Whether a secret exists.
+   *
+   * Three answers, not two. `true` and `false` are the ones a caller expects; the third is an
+   * `EuclidServiceError`, and it is the one that matters. An expired session, an unreachable
+   * gateway or a refused permission is not the same as "not there", and resolving to `false` for
+   * them would have callers recreating secrets over an outage.
+   *
+   * Asks {@link listSecrets} rather than {@link getSecret}, deliberately. `get-secret` answers with
+   * the decrypted value, so asking it whether a secret exists would mean holding `ess:get-secret` -
+   * permission to read the password rather than to know the name is taken - decrypting it, carrying
+   * the plaintext back across the wire, and leaving an audit entry indistinguishable from somebody
+   * actually reading it. None of that is any part of the question. This needs `ess:list-secrets` and
+   * never touches the value.
+   *
+   * The whole matching page is asked for rather than the default, because the prefix also matches
+   * longer names - `"db-password"` matches `"db-password-old"` too - and a name could otherwise be
+   * called absent because longer ones crowded it off page one.
+   *
+   * @param name name of the secret, matched exactly.
+   */
+  async existsSecret(name: string): Promise<boolean> {
+    const matching = await this.listSecrets({ prefix: name, pageSize: 0 });
+    return matching.items.some((secret) => secret.name === name);
+  }
+
   /** Replaces a secret's value, which is what a rotation is and what bumps its version. */
   async rotateSecret(name: string, value: string): Promise<Secret> {
     return this.updateSecret(name, { value });

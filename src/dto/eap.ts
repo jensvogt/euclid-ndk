@@ -56,7 +56,7 @@ export interface Application {
    */
   namespace: string;
   region: string;
-  /** `JAVA`, `PYTHON`, `NODEJS` or `BINARY` - see {@link import("../modules/eap.js")}. */
+  /** `JAVA`, `JAVA21`, `JAVA25`, `PYTHON`, `NODEJS` or `BINARY` - see {@link import("../modules/eap.js")}. */
   runtime: string;
   /** The bucket the artifact was deployed from, as an ERN. Deployed by name. */
   bucketErn: string;

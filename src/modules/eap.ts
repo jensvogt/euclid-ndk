@@ -40,10 +40,16 @@ export const TARGET = "eap";
 
 /**
  * What an artifact is handed to. Matched exactly, in upper case, and anything else is refused with
- * HTTP 400 - a runtime is a category rather than a version, so a JDK 17 and a JDK 25 application are both
- * {@link RUNTIME_JAVA} and it is the command or the PATH that decides which one runs.
+ * HTTP 400 - `JAVA21` is a runtime, `java21` and `JAVA 21` are typos.
+ *
+ * {@link RUNTIME_JAVA} is whichever java the host calls java, which is what every application deployed
+ * before the versioned ones said. {@link RUNTIME_JAVA21} and {@link RUNTIME_JAVA25} name a version and are
+ * started with the executable that host has configured for it - a jar built for 25 does not start on 21,
+ * and leaving it to whichever java resolved first made the version an accident of the manager's PATH.
  */
 export const RUNTIME_JAVA = "JAVA";
+export const RUNTIME_JAVA21 = "JAVA21";
+export const RUNTIME_JAVA25 = "JAVA25";
 export const RUNTIME_PYTHON = "PYTHON";
 export const RUNTIME_NODEJS = "NODEJS";
 /** Anything already executable, which is where C++ and Rust applications land. */
@@ -203,7 +209,8 @@ export class EuclidEap extends ModuleClient {
    * cannot grant itself another namespace's bucket by naming it.
    *
    * @param applicationId aoolication ID
-   * @param runtime {@link RUNTIME_JAVA}, {@link RUNTIME_PYTHON}, {@link RUNTIME_NODEJS} or
+   * @param runtime {@link RUNTIME_JAVA}, {@link RUNTIME_JAVA21}, {@link RUNTIME_JAVA25},
+   *   {@link RUNTIME_PYTHON}, {@link RUNTIME_NODEJS} or
    *   {@link RUNTIME_BINARY}.
    * @param bucket the name of the bucket holding the artifact - a name, not an ERN.
    * @param artifact the artifact's object key within that bucket.

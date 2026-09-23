@@ -611,6 +611,30 @@ describe("how EQS authenticates", () => {
     );
   });
 
+  it("answers whether a queue exists, yes and no", async () => {
+    gateway.answer("eqs", "get-queue-ern", { ern: QUEUE });
+    assert.equal(await eqs.existsQueue("orders"), true);
+
+    gateway.answer("eqs", "get-queue-ern", { error: "Queue not found, name: nope" }, 404);
+    assert.equal(await eqs.existsQueue("nope"), false);
+  });
+
+  it("rejects rather than answering when it could not tell whether a queue exists", async () => {
+    // The third answer, and the reason this is not a two-state method. A caller that got false from
+    // an expired session would delete and recreate a queue that was there all along, so anything
+    // that is not a 404 has to reject rather than resolve.
+    for (const status of [401, 403, 500]) {
+      gateway.answer("eqs", "get-queue-ern", { error: "not today" }, status);
+      await assert.rejects(
+        () => eqs.existsQueue("orders"),
+        (error: EuclidServiceError) => {
+          assert.equal(error.status, status);
+          return true;
+        },
+      );
+    }
+  });
+
   it("reaches an action this SDK does not wrap, and its metrics", async () => {
     gateway.answer("eqs", "get-metrics", { items: [{ name: "eqs-messages", value: 3 }] });
     gateway.answer("eqs", "some-future-action", { ok: true });
