@@ -258,7 +258,7 @@ calls scopes the second one.
 
 | Method | Action |
 | --- | --- |
-| `createBucket`, `listBuckets`, `getBucketErn`, `getBucketSize`, `renameBucket`, `purgeBucket`, `deleteBucket` | buckets |
+| `createBucket`, `listBuckets`, `getBucketErn`, `existsBucket`, `getBucketSize`, `renameBucket`, `purgeBucket`, `deleteBucket` | buckets |
 | `addBucketTag`, `setBucketTag`, `deleteBucketTag` | bucket tags |
 | `enableEncryption`, `disableEncryption` | encryption at rest, under an EKM key |
 | `setBucketInternal` | whether a bucket is euclid's own plumbing, and so left out of a listing |
@@ -273,6 +273,17 @@ calls scopes the second one.
 
 Buckets and objects are named by ERN, not by name - `createBucket` answers with the one everything
 else takes, and `getBucketErn` is how an existing bucket's is looked up.
+
+`existsBucket` is one of a family - ESM, EQS, ENS, EKM, EKV and ESS each have one, for buckets, queues,
+topics, keys, tables and secrets. All six answer three ways rather than two. `true` and `false` are the
+expected pair; the third is a thrown `EuclidServiceError`, and it is the one that matters. Only HTTP 404 -
+the answer that actually says the thing is absent - becomes `false`. An expired session, an unreachable
+gateway or a refused permission throws, because resolving `false` for those would have a caller recreating
+something over an outage:
+
+```ts
+if (!(await session.esm().existsBucket("reports"))) await session.esm().createBucket("reports");
+```
 
 ### Writing and reading bytes
 
@@ -346,7 +357,7 @@ checks `listSubscriptions` first.
 
 | Method | Action |
 | --- | --- |
-| `createQueue`, `listQueues`, `getQueueErn`, `getQueueMetadata`, `purgeQueue`, `purgeAllQueues`, `deleteQueue` | queues |
+| `createQueue`, `listQueues`, `getQueueErn`, `existsQueue`, `getQueueMetadata`, `purgeQueue`, `purgeAllQueues`, `deleteQueue` | queues |
 | `addQueueTag`, `setQueueTag`, `deleteQueueTag` | queue tags |
 | `stopQueue`, `startQueue`, `setQueueVisibility` | what a queue hands out, and for how long |
 | `setQueueDelay`, `setQueueMaxMessageLength` | how long a send is held back, and how large it may be |
@@ -427,7 +438,7 @@ instrumentation says so rather than leaving the server to guess from a rate.
 
 | Method | Action |
 | --- | --- |
-| `createTopic`, `listTopics`, `getTopicErn`, `getTopicMetadata`, `purgeTopic`, `purgeAllTopics`, `deleteTopic` | topics |
+| `createTopic`, `listTopics`, `getTopicErn`, `existsTopic`, `getTopicMetadata`, `purgeTopic`, `purgeAllTopics`, `deleteTopic` | topics |
 | `addTopicTag`, `setTopicTag`, `deleteTopicTag` | topic tags |
 | `stopTopic`, `startTopic` | holding delivery, and handing over what was held |
 | `resendMessages` | handing what the topic still holds to its subscribers again |
@@ -521,7 +532,7 @@ euclid-jdk send.
 
 | Method | Action |
 | --- | --- |
-| `createKey`, `listKeys`, `getKey`, `setKeyDescription`, `addKeyTag`, `deleteKeyTag` | keys |
+| `createKey`, `listKeys`, `getKey`, `existsKey`, `setKeyDescription`, `addKeyTag`, `deleteKeyTag` | keys |
 | `revokeKey`, `deleteKey` | taking a key out of use, and out of existence |
 | `encrypt`, `decrypt` | using one |
 | `importCertificate`, `createCertificate`, `getCertificate`, `listCertificates`, `deleteCertificate` | the certificates a deployment serves |
@@ -558,7 +569,7 @@ months later it is the only thing that answers whether the key can be deleted.
 
 | Method | Action |
 | --- | --- |
-| `createTable`, `getTable`, `listTables`, `deleteTable` | tables |
+| `createTable`, `getTable`, `existsTable`, `listTables`, `deleteTable` | tables |
 | `putItem`, `getItem`, `findItem`, `deleteItem` | one item at a time |
 | `query` | the items of one partition, in sort-key order |
 | `scan` | a table's items without regard to their key |
@@ -620,6 +631,12 @@ await eap.createApplication("order-service", RUNTIME_JAVA, "artifacts", "order-s
 await eap.startApplication("order-service");
 ```
 
+A runtime is matched exactly and in upper case. `RUNTIME_JAVA` is whichever java the host calls java, which
+is what every application deployed before the versioned runtimes existed says; `RUNTIME_JAVA21` and
+`RUNTIME_JAVA25` name a version and start under the executable that host has configured for it. A jar built
+for 25 does not start on 21, and leaving it to whichever java resolved first made the version an accident of
+the manager's `PATH` - so a versioned runtime is the one to name when the artifact needs one.
+
 The deployment says which buckets and queues the application may reach, and euclid grants those to the
 identity it runs as: a technical principal it creates unless one is named, with no password, no login and
 one access key, so that nothing an application leaks is a person's credential. Those names are resolved in
@@ -654,7 +671,7 @@ checksum is refused, which usually means the new artifact never reached the buck
 
 | Method | Action |
 | --- | --- |
-| `createSecret`, `getSecret`, `listSecrets`, `deleteSecret` | secrets |
+| `createSecret`, `getSecret`, `existsSecret`, `listSecrets`, `deleteSecret` | secrets |
 | `rotateSecret`, `updateSecret` | replacing a value, a description, or the key it is under |
 | `addSecretTag`, `deleteSecretTag` | tags |
 | `metrics` | ESS's own metrics |
@@ -669,6 +686,10 @@ await ess.createSecret("db-password", "hunter2", { description: "the reporting d
 
 const password = (await ess.getSecret("db-password")).value;
 ```
+
+`existsSecret` asks the listing rather than `getSecret`, deliberately: asking for the value to find out
+whether a name is taken would need `ess:get-secret` rather than `ess:list-secrets`, decrypt the secret,
+carry the plaintext back, and leave an audit entry indistinguishable from somebody actually reading it.
 
 `getSecret` is the only call that answers with a value, and so the only point at which one enters the
 process - everything else answers with metadata alone, so a listing, a rotation and a tag change can be
