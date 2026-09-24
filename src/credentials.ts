@@ -127,7 +127,12 @@ function fromJson(document: Record<string, unknown>): CachedCredentials {
     accessKeyId: text(document["accessKeyId"]),
     secretAccessKey: text(document["secretAccessKey"]),
     isAdmin: document["isAdmin"] === true,
-    baseUrl: text(document["baseUrl"]),
+    // "endpoint" is the same field under the name euclid's manager writes it as. A managed
+    // application is handed its credentials through EUCLID_CREDENTIALS_FILE - see
+    // {@link credentialsPath} - and the file the manager writes there calls the server "endpoint",
+    // where a file this SDK wrote calls it "baseUrl". Reading only one of the two left an
+    // application with a valid token and no idea where to send it.
+    baseUrl: text(document["baseUrl"]) || text(document["endpoint"]),
     namespace: text(document["namespace"]),
     raw: document,
   };

@@ -132,6 +132,46 @@ describe("updateNamespace", () => {
   });
 });
 
+describe("a managed application's credentials", () => {
+  it("reads the server from the key the manager writes it under", async () => {
+    // The file a euclid-managed application is handed, which the manager writes: the server is
+    // called "endpoint" there and "baseUrl" in a file this SDK wrote. Reading only "baseUrl" left an
+    // application with a valid token and nowhere to send it - the one field it cannot do without.
+    await writeFile(
+      path,
+      JSON.stringify({
+        token: token(),
+        expiresAt: "2026-09-24T15:07:36.000Z",
+        userId: "app-echo-worker",
+        accountId: "000000000000",
+        region: "eu-central-1",
+        namespace: "development",
+        endpoint: "https://localhost:5566",
+      }),
+    );
+
+    const loaded = await load();
+    assert.ok(loaded);
+    assert.equal(loaded.baseUrl, "https://localhost:5566");
+    assert.equal(loaded.userId, "app-echo-worker");
+    assert.equal(loaded.namespace, "development");
+    // No access key at all: a technical principal's secret never leaves EAM, so the token is the
+    // whole of what the process holds.
+    assert.equal(loaded.accessKeyId, "");
+  });
+
+  it("prefers baseUrl when the file carries both", async () => {
+    await writeFile(
+      path,
+      JSON.stringify({ token: token(), baseUrl: "https://euclid.example.com", endpoint: "https://localhost:5566" }),
+    );
+
+    const loaded = await load();
+    assert.ok(loaded);
+    assert.equal(loaded.baseUrl, "https://euclid.example.com");
+  });
+});
+
 describe("isTokenValid", () => {
   it("accepts a token whose exp is still ahead", () => {
     assert.equal(isTokenValid(token(3600)), true);
