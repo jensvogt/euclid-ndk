@@ -172,6 +172,7 @@ export type {
   PurgeBucketResult,
   RenameBucketResult,
   SetBucketInternalResult,
+  SetBucketPriorityResult,
   StoredObject,
   TouchObjectResult,
 } from "./dto/esm.js";

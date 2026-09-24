@@ -33,6 +33,12 @@ export interface Bucket {
   encryptionKeyErn: string;
   /** One of euclid's own buckets rather than somebody's. Left out of a listing unless asked for. */
   internal: boolean;
+  /**
+   * Priority the notifications this bucket sends are given, empty when it sets none. Nothing about the
+   * bucket depends on it - see
+   * {@link import("../modules/esm.js").EuclidEsm.setBucketPriority}.
+   */
+  priority: string;
   created: string;
   modified: string;
 }
@@ -101,6 +107,14 @@ export interface SetBucketInternalResult {
   ern: string;
   name: string;
   internal: boolean;
+}
+
+/** A bucket and the priority its notifications now carry. */
+export interface SetBucketPriorityResult {
+  ern: string;
+  name: string;
+  /** As stored - upper case, or empty when it was cleared. */
+  priority: string;
 }
 
 /**
@@ -260,6 +274,7 @@ export function toBucket(document: unknown): Bucket {
     encrypted: flag(document, "encrypted"),
     encryptionKeyErn: text(document, "encryptionKeyErn"),
     internal: flag(document, "internal"),
+    priority: text(document, "priority"),
     created: text(document, "created"),
     modified: text(document, "modified"),
   };
@@ -316,6 +331,10 @@ export function toRenameBucketResult(document: unknown): RenameBucketResult {
 
 export function toSetBucketInternalResult(document: unknown): SetBucketInternalResult {
   return { ern: text(document, "ern"), name: text(document, "name"), internal: flag(document, "internal") };
+}
+
+export function toSetBucketPriorityResult(document: unknown): SetBucketPriorityResult {
+  return { ern: text(document, "ern"), name: text(document, "name"), priority: text(document, "priority") };
 }
 
 export function toDeleteBucketResult(document: unknown): DeleteBucketResult {

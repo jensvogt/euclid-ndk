@@ -52,6 +52,7 @@ import {
   type PurgeBucketResult,
   type RenameBucketResult,
   type SetBucketInternalResult,
+  type SetBucketPriorityResult,
   type AbortUploadResult,
   type StoredObject,
   type TouchObjectResult,
@@ -71,6 +72,7 @@ import {
   toPurgeBucketResult,
   toRenameBucketResult,
   toSetBucketInternalResult,
+  toSetBucketPriorityResult,
   toStoredObject,
   toTouchObjectResult,
 } from "../dto/esm.js";
@@ -232,9 +234,17 @@ export class EuclidEsm extends ModuleClient {
    * `internal` marks it as euclid's own plumbing rather than somebody's bucket, which leaves it out of
    * an ordinary listing - see {@link setBucketInternal}, which is how a bucket that already exists
    * changes its mind about that.
+   *
+   * `priority` is for the notifications a subscription of this bucket produces, not for the bucket -
+   * see {@link setBucketPriority}. Left empty it is not sent at all.
    */
-  async createBucket(name: string, internal = false): Promise<CreateBucketResult> {
-    return toCreateBucketResult(await this.call("create-bucket", { name, internal }));
+  async createBucket(name: string, internal = false, priority = ""): Promise<CreateBucketResult> {
+    // The priority is left off the request entirely when there is none, rather than sent empty: a
+    // bucket that says nothing about priority is the default, and a create that always carried the
+    // field would hand an older installation one it has no meaning for.
+    const request: Record<string, unknown> = { name, internal };
+    if (priority) request["priority"] = priority;
+    return toCreateBucketResult(await this.call("create-bucket", request));
   }
 
   /**
@@ -339,6 +349,34 @@ export class EuclidEsm extends ModuleClient {
    */
   async setBucketInternal(ern: string, internal = true): Promise<SetBucketInternalResult> {
     return toSetBucketInternalResult(await this.call("set-bucket-internal", { ern, internal }));
+  }
+
+  /**
+   * Sets the priority the notifications this bucket sends are given.
+   *
+   * The bucket does nothing with it. A bucket is not consumed from and has no queue of its own, so there
+   * is nothing here for a priority to mean - it exists to be handed on, to the messages a subscription of
+   * this bucket turns an object event into. "Everything that lands in this bucket is urgent" is the
+   * statement it makes, and the queue on the other side of the subscription is where that statement
+   * finally has an effect.
+   *
+   * **Which priority wins.** Four statements can be in play about one message, least specific first: the
+   * target queue's own default, this, the priority in the object's own system attributes, and a priority a
+   * message already had when a topic passed it on. The object's beats the bucket's because it is the
+   * narrower claim - which is what lets a bucket set a floor without taking away the ability to say more
+   * about a particular object.
+   *
+   * **Empty is not MEDIUM.** An empty `priority` clears it, and is the only way back to letting the queue
+   * decide. A bucket that says nothing leaves a queue created with `LOW` delivering at `LOW`, where a
+   * bucket saying `MEDIUM` would override it. Sent even when empty, unlike {@link createBucket}, because
+   * here it is an instruction rather than an omission.
+   *
+   * @param ern the bucket, by name or by ERN.
+   * @param priority `"LOW"`, `"MEDIUM"` or `"HIGH"`, or empty to clear it. Case is not significant;
+   *   anything else is refused rather than ignored.
+   */
+  async setBucketPriority(ern: string, priority = ""): Promise<SetBucketPriorityResult> {
+    return toSetBucketPriorityResult(await this.call("set-bucket-priority", { ern, priority }));
   }
 
   /**

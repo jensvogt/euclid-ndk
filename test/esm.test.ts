@@ -819,6 +819,36 @@ describe("call", () => {
     assert.equal(gateway.last().auth, "sigv4");
   });
 
+  it("sets the priority its notifications are sent with", async () => {
+    gateway.answer("esm", "set-bucket-priority", { ern: BUCKET, name: "inbox", priority: "HIGH" });
+
+    const result = await esm.setBucketPriority(BUCKET, "HIGH");
+
+    assert.equal(result.priority, "HIGH");
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, priority: "HIGH" });
+  });
+
+  it("clears a bucket priority by sending the field empty", async () => {
+    // Empty is an instruction here, not an omission: it is the only way back to letting the target
+    // queue's own default decide. Leaving the field out would ask the server to change nothing.
+    gateway.answer("esm", "set-bucket-priority", { ern: BUCKET, name: "inbox", priority: "" });
+
+    await esm.setBucketPriority(BUCKET);
+
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, priority: "" });
+  });
+
+  it("only carries a priority into create-bucket when there is one", async () => {
+    gateway.answer("esm", "create-bucket", { name: "inbox", ern: BUCKET });
+
+    await esm.createBucket("inbox");
+    // Absent rather than empty, so an older installation is not handed a field it has no meaning for.
+    assert.equal("priority" in (gateway.last().json() as object), false);
+
+    await esm.createBucket("inbox", false, "HIGH");
+    assert.equal((gateway.last().json() as { priority: string }).priority, "HIGH");
+  });
+
   it("answers metrics unparsed", async () => {
     gateway.answer("esm", "get-metrics", { items: [{ name: "esm-objects", value: 3 }] });
 
