@@ -341,6 +341,43 @@ describe("running", () => {
     assert.equal(restarted.instances, 3);
   });
 
+  it("names what applying a declaration created and what it removed", async () => {
+    gateway.answer("eap", "apply-infrastructure", {
+      applicationId: "order-service",
+      declared: true,
+      created: ["ern:eqs:eu-central-1:000000000000:development:queue:orders"],
+      deleted: ["ern:eqs:eu-central-1:000000000000:development:queue:retired"],
+      granted: ["access-queue-consume"],
+      revoked: ["access-queue-produce"],
+    });
+
+    const applied = await eap.applyInfrastructure("order-service");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
+    assert.equal(applied.declared, true);
+    assert.deepEqual(applied.created, ["ern:eqs:eu-central-1:000000000000:development:queue:orders"]);
+    // The half worth reading before trusting a declaration: a reconcile is full, so a resource this
+    // application created and the file no longer names is gone, and took its messages with it. Named rather
+    // than counted, so a removal nobody intended is visible in the answer.
+    assert.deepEqual(applied.deleted, ["ern:eqs:eu-central-1:000000000000:development:queue:retired"]);
+    assert.deepEqual(applied.granted, ["access-queue-consume"]);
+    assert.deepEqual(applied.revoked, ["access-queue-produce"]);
+  });
+
+  it("answers rather than refuses an application with no declaration", async () => {
+    // Not an error: an application that provisions its resources by hand reads this way every time, and the
+    // four lists come back empty rather than absent.
+    gateway.answer("eap", "apply-infrastructure", { applicationId: "order-service", declared: false });
+
+    const applied = await eap.applyInfrastructure("order-service");
+
+    assert.equal(applied.declared, false);
+    assert.deepEqual(applied.created, []);
+    assert.deepEqual(applied.deleted, []);
+    assert.deepEqual(applied.granted, []);
+    assert.deepEqual(applied.revoked, []);
+  });
+
   it("reports the instances answering for an application", async () => {
     gateway.answer("eap", "get-application", APPLICATION);
 

@@ -27,9 +27,11 @@
 
 import {
   toApplication,
+  toInfrastructureResult,
   toLogLevelResult,
   toRestartResult,
   type Application,
+  type InfrastructureResult,
   type LogLevelResult,
   type RestartResult,
 } from "../dto/eap.js";
@@ -375,6 +377,28 @@ export class EuclidEap extends ModuleClient {
    */
   async restartApplication(applicationId: string): Promise<RestartResult> {
     return toRestartResult(await this.call("restart-application", { applicationId }));
+  }
+
+  /**
+   * Makes the installation match the application's own infrastructure declaration.
+   *
+   * The declaration is a file the application has already stored beside its artifact -
+   * `<applicationId>.euclid.json` in the bucket it deploys from - naming the queues, topics and buckets it owns
+   * and the ones belonging to others that it reaches. This applies it: creates what is missing, grants the
+   * access it asks for, and **deletes what this application created and the declaration no longer names**,
+   * with everything that resource held.
+   *
+   * Applying is idempotent and changes nothing about the running instances - the modification date is
+   * deliberately not stamped, so the manager does not read it as a new revision and cycle the pool. It happens
+   * on its own whenever the application is created, updated or redeployed; this is for reconciling without a
+   * deploy.
+   *
+   * An application with no declaration stored is answered rather than refused, with `declared` false. A
+   * declaration that cannot be applied rejects: one that names a resource belonging to another application, or
+   * claims one it does not own, throws rather than being partly applied.
+   */
+  async applyInfrastructure(applicationId: string): Promise<InfrastructureResult> {
+    return toInfrastructureResult(await this.call("apply-infrastructure", { applicationId }));
   }
 
   /**
