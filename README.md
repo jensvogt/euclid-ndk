@@ -84,7 +84,9 @@ await esm.uploadFile(bucket.ern, "2026/q3.pdf", "q3.pdf");
 costs one round trip. It is the same file `euclid-cli`, `euclid-jdk` and `euclid-pdk` use, with the
 same field names, so a login from any of the four is picked up by the others.
 `EUCLID_CREDENTIALS_FILE` overrides the path, which is also how euclid hands a managed application
-its own credentials.
+its own credentials. A file the manager wrote names the server `endpoint` where a file this SDK wrote
+names it `baseUrl`; both are read, so a managed application does not end up with a valid token and no
+idea where to send it.
 
 Pass `useCache(false)` to force a fresh login and leave the file alone.
 
@@ -262,6 +264,7 @@ calls scopes the second one.
 | `addBucketTag`, `setBucketTag`, `deleteBucketTag` | bucket tags |
 | `enableEncryption`, `disableEncryption` | encryption at rest, under an EKM key |
 | `setBucketInternal` | whether a bucket is euclid's own plumbing, and so left out of a listing |
+| `setBucketPriority` | the priority the notifications this bucket sends are given |
 | `listObjects`, `copyObject`, `moveObject`, `renameObject`, `deleteObject`, `deleteObjects` | objects |
 | `countObjects`, `getObjectCount` | how many there are: counted exactly, or the bucket's stored running total |
 | `touchObject` | re-announce objects already stored, for a listener that missed their events |
@@ -350,6 +353,28 @@ const event = parseBucketEvent(message.body);
 `unsubscribe` takes the subscription's own ERN - not the bucket's, and not the target's. Subscribing
 is not idempotent: a second call delivers every matching event twice, so a caller that may run twice
 checks `listSubscriptions` first.
+
+`setBucketPriority` is about those messages rather than about the bucket. A bucket is not consumed from
+and has no queue of its own, so there is nothing there for a priority to mean - it is handed on to the
+notifications a subscription turns an object event into. "Everything that lands here is urgent" is the
+statement, and the queue on the far side of the subscription is where it takes effect:
+
+```ts
+import { PRIORITY_HIGH } from "euclid-ndk";
+
+await esm.setBucketPriority(bucket.ern, PRIORITY_HIGH);
+await esm.setBucketPriority(bucket.ern, "");  // back to letting the queue decide
+```
+
+Four statements can be in play about one message, least specific first: the target queue's own default,
+the bucket's, the priority in the object's own system attributes, and one a message already carried when
+a topic passed it on. The object's beats the bucket's because it is the narrower claim - which is what
+lets a bucket set a floor without giving up the ability to say more about a particular object.
+
+**Empty is not `MEDIUM`.** Clearing it is the only way back to letting the queue decide: a bucket that
+says nothing leaves a queue created `LOW` delivering at `LOW`, where a bucket saying `MEDIUM` overrides
+it. `createBucket` takes a priority too, and omits the field entirely when it is empty; `setBucketPriority`
+sends it either way, because there an empty value is the instruction.
 
 ## What EQS covers
 
@@ -612,7 +637,8 @@ while `scan` reads the table, which is right for an export and wrong for a looku
 | Method | Action |
 | --- | --- |
 | `createApplication`, `updateApplication`, `copyApplication`, `redeployApplication`, `deleteApplication` | deploying |
-| `startApplication`, `stopApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
+| `startApplication`, `stopApplication`, `restartApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
+| `applyInfrastructure` | making the installation match the application's own declaration |
 | `setLogLevel`, `resetLogLevel` | what one application logs, without restarting it |
 | `metrics` | EAP's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
@@ -664,6 +690,36 @@ to the runtime's own interpreter. `buckets` and `queues` are re-resolved togethe
 named - so pass both or neither, since naming one revokes what the other granted. For a new build of the
 same application, `redeployApplication` is the call; one that would change neither the version nor the
 checksum is refused, which usually means the new artifact never reached the bucket.
+
+### Infrastructure declarations
+
+An application can carry its own infrastructure: a `<applicationId>.euclid.json` file stored beside its
+artifact in the bucket it deploys from, naming under `creates` the queues, topics and buckets it owns, and
+under `uses` the ones belonging to others that it reaches, with the `access` it needs and the `owner` that
+has it. euclid applies it whenever the application is created, updated or redeployed; `applyInfrastructure`
+is how to reconcile without a deploy:
+
+```ts
+const applied = await eap.applyInfrastructure("order-service");
+if (!applied.declared) console.log("no declaration stored - nothing to reconcile");
+for (const gone of applied.deleted) console.log(`removed ${gone}`);
+```
+
+Three things to know before trusting one:
+
+* **The reconcile is full.** A resource this application created and the declaration no longer names is
+  *deleted*, with the messages or objects in it. That is why the call answers instead of just succeeding -
+  `deleted` names each one, so a removal nobody intended is visible rather than something to go looking for.
+* **`declared: false` is not a failure.** It means no declaration is stored; the four lists are empty and
+  nothing happened. An application that provisions by hand reads this way every time.
+* **`granted` and `revoked` repeat themselves.** Access roles are replaced wholesale rather than diffed, so
+  a re-apply that changes nothing still reports every `access-` role in both lists.
+
+Applying changes nothing about the running instances - the modification date is deliberately not stamped, so
+the manager does not read it as a new revision and cycle the pool. A declaration that cannot be applied
+throws rather than being half applied: one naming a resource that belongs to another application, or claiming
+one it does not own. During a *deploy* the same failure is only logged, because refusing there would stop a
+release over a JSON typo; asked for directly, it is an error.
 
 ## What ESS covers
 
