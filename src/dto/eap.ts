@@ -118,6 +118,30 @@ export interface RestartResult {
   instances: number;
 }
 
+/**
+ * What applying an application's infrastructure declaration came to.
+ *
+ * `declared` false means the application has no declaration stored - not that applying one failed. Nothing was
+ * created, deleted or granted, and the four lists are empty; an application that provisions its resources by
+ * hand reads this way every time and is not in error.
+ *
+ * `deleted` is the half worth reading before trusting a declaration: a reconcile is full, so a resource this
+ * application created and the declaration no longer names is removed, taking a queue's messages or a bucket's
+ * objects with it. It is named here rather than counted so that a removal nobody intended is visible.
+ *
+ * `granted` and `revoked` name roles rather than permissions, and a re-apply that changes nothing still
+ * reports every `access-` role in both: they are replaced wholesale rather than diffed, so the same role
+ * appears as revoked and granted again.
+ */
+export interface InfrastructureResult {
+  applicationId: string;
+  declared: boolean;
+  created: string[];
+  deleted: string[];
+  granted: string[];
+  revoked: string[];
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toEndpoint(document: unknown): Endpoint {
@@ -164,6 +188,17 @@ export function toRestartResult(document: unknown): RestartResult {
     applicationId: text(document, "applicationId"),
     restarting: flag(document, "restarting"),
     instances: number(document, "instances"),
+  };
+}
+
+export function toInfrastructureResult(document: unknown): InfrastructureResult {
+  return {
+    applicationId: text(document, "applicationId"),
+    declared: flag(document, "declared"),
+    created: strings(document, "created"),
+    deleted: strings(document, "deleted"),
+    granted: strings(document, "granted"),
+    revoked: strings(document, "revoked"),
   };
 }
 

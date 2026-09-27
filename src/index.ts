@@ -91,7 +91,7 @@ export type {
   ListenerCertificate,
   Route,
 } from "./dto/eag.js";
-export type { Application, Endpoint, LogLevelResult, RestartResult } from "./dto/eap.js";
+export type { Application, Endpoint, InfrastructureResult, LogLevelResult, RestartResult } from "./dto/eap.js";
 export {
   CREATED_ATTRIBUTE,
   MODIFIED_ATTRIBUTE,
@@ -172,6 +172,7 @@ export type {
   PurgeBucketResult,
   RenameBucketResult,
   SetBucketInternalResult,
+  SetBucketPriorityResult,
   StoredObject,
   TouchObjectResult,
 } from "./dto/esm.js";
