@@ -160,6 +160,20 @@ export interface TopicMessageCount {
   resend: number;
 }
 
+/**
+ * What a message looks like after its body was replaced.
+ *
+ * `previousSize` is the one thing a caller cannot go back and check: the body it replaced is gone by
+ * the time the answer arrives.
+ */
+export interface TopicUpdateMessageBodyResult {
+  messageId: string;
+  topicErn: string;
+  size: number;
+  previousSize: number;
+  contentType: string;
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toTopic(document: unknown): Topic {
@@ -190,6 +204,16 @@ export function toTopicMessage(document: unknown): TopicMessage {
     lastReceived: text(document, "lastReceived"),
     created: text(document, "created"),
     modified: text(document, "modified"),
+  };
+}
+
+export function toTopicUpdateMessageBodyResult(document: unknown): TopicUpdateMessageBodyResult {
+  return {
+    messageId: text(document, "messageId"),
+    topicErn: text(document, "topicErn"),
+    size: number(document, "size"),
+    previousSize: number(document, "previousSize"),
+    contentType: text(document, "contentType"),
   };
 }
 

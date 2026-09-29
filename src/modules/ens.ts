@@ -47,6 +47,7 @@ import {
   toTopicRetentionResult,
   toResendResult,
   toTopicStateResult,
+  toTopicUpdateMessageBodyResult,
   type CreateTopicResult,
   type Topic,
   type TopicMessage,
@@ -57,6 +58,7 @@ import {
   type TopicRetentionResult,
   type ResendResult,
   type TopicStateResult,
+  type TopicUpdateMessageBodyResult,
 } from "../dto/ens.js";
 import { EuclidServiceError } from "../errors.js";
 import { listPayload, ModuleClient, pagePayload, type ListOptions, type PageOptions } from "./base.js";
@@ -392,6 +394,23 @@ export class EuclidEns extends ModuleClient {
   /** A topic's message counters: what is on it, what went out, and what had to go out again. */
   async getMessageCount(ern: string): Promise<TopicMessageCount> {
     return toTopicMessageCount(await this.call("get-message-count", { ern }));
+  }
+
+  /**
+   * Replaces the body of a message already published to the topic.
+   *
+   * The whole body, not part of it. The message keeps its ID and its attributes; the body, its size
+   * and its content type are what change.
+   *
+   * What this reaches is the copy ENS still holds - what `listMessages` and `getMessage` answer with,
+   * and what a resend would send. A topic fans a message out to its subscribers when it is published,
+   * so the copies that already left are past changing: this corrects the record rather than the
+   * delivery, which is the opposite of what one would assume.
+   *
+   * The topic's maximum message length applies exactly as it does to `publishMessage`.
+   */
+  async updateMessageBody(messageId: string, body: string): Promise<TopicUpdateMessageBodyResult> {
+    return toTopicUpdateMessageBodyResult(await this.call("update-message-body", { messageId, body }));
   }
 
   /**

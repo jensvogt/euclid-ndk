@@ -33,6 +33,7 @@ import {
   toQueueMessageMetadata,
   toQueueMetadata,
   toQueueStatusResult,
+  toQueueUpdateMessageBodyResult,
   toRedriveDlqResult,
   type CreateQueueResult,
   type Queue,
@@ -44,6 +45,7 @@ import {
   type QueueMessageMetadata,
   type QueueMetadata,
   type QueueStatusResult,
+  type QueueUpdateMessageBodyResult,
   type RedriveDlqResult,
   type SendBatchResult,
   toSendBatchResult,
@@ -595,6 +597,20 @@ export class EuclidEqs extends ModuleClient {
    */
   async setMessageVisibility(messageId: string, visibility: number): Promise<void> {
     await this.call("set-message-visibility", { messageId, visibility });
+  }
+
+  /**
+   * Replaces the body of a message already on the queue.
+   *
+   * The whole body, not part of it - a message body is opaque to euclid, so there is nothing that
+   * could merge two of them. The message keeps its ID, status, priority, visibility and attributes;
+   * the body, its size and its content type are what change.
+   *
+   * The queue's maximum message length applies exactly as it does to `sendMessage`, so a body that
+   * could not have been sent cannot be reached by sending something short and then growing it.
+   */
+  async updateMessageBody(messageId: string, body: string): Promise<QueueUpdateMessageBodyResult> {
+    return toQueueUpdateMessageBodyResult(await this.call("update-message-body", { messageId, body }));
   }
 
   /** One attribute of one message. */

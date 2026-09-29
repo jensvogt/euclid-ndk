@@ -136,6 +136,20 @@ export interface QueueMessageMetadata {
   modified: string;
 }
 
+/**
+ * What a message looks like after its body was replaced.
+ *
+ * `previousSize` is the one thing a caller cannot go back and check: the body it replaced is gone by
+ * the time the answer arrives.
+ */
+export interface QueueUpdateMessageBodyResult {
+  messageId: string;
+  queueErn: string;
+  size: number;
+  previousSize: number;
+  contentType: string;
+}
+
 /** A queue's delay after setting it, in seconds. What it holds back is sent from then on, not before. */
 export interface QueueDelayResult {
   ern: string;
@@ -289,6 +303,16 @@ export function toQueueMessageCount(document: unknown): QueueMessageCount {
     delayed: number(document, "delayed"),
     invisible: number(document, "invisible"),
     total: number(document, "total"),
+  };
+}
+
+export function toQueueUpdateMessageBodyResult(document: unknown): QueueUpdateMessageBodyResult {
+  return {
+    messageId: text(document, "messageId"),
+    queueErn: text(document, "queueErn"),
+    size: number(document, "size"),
+    previousSize: number(document, "previousSize"),
+    contentType: text(document, "contentType"),
   };
 }
 
