@@ -388,7 +388,7 @@ sends it either way, because there an empty value is the instruction.
 | `setQueueDelay`, `setQueueMaxMessageLength` | how long a send is held back, and how large it may be |
 | `sendMessage`, `sendMessageBatch`, `receiveMessages`, `receiveAllMessages`, `deleteMessage`, `deleteMessageById` | messages |
 | `listMessages`, `getMessageCount`, `getMessageMetadata` | inspecting a queue without consuming it |
-| `getMessageAttribute`, `setMessageAttribute`, `setMessageVisibility` | one message at a time |
+| `getMessageAttribute`, `setMessageAttribute`, `setMessageVisibility`, `updateMessageBody` | one message at a time |
 | `redriveDlq` | moving a dead letter queue's messages back where they came from |
 | `asInternal`, `metrics` | euclid's own traffic, and EQS's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
@@ -469,9 +469,20 @@ instrumentation says so rather than leaving the server to guess from a rate.
 | `resendMessages` | handing what the topic still holds to its subscribers again |
 | `setTopicRetention`, `setTopicMaxMessageLength` | how long a published message is kept, and how large it may be |
 | `publishMessage`, `listMessages`, `getMessageCount` | messages |
-| `getMessageAttribute`, `setMessageAttribute` | one published message at a time |
+| `getMessageAttribute`, `setMessageAttribute`, `updateMessageBody` | one published message at a time |
 | `subscribe`, `listSubscriptions`, `unsubscribe` | delivery onward to a queue |
 | `metrics` | ENS's own metrics |
+
+`updateMessageBody` replaces a stored body - the whole of it, since a body is opaque to euclid and
+there is nothing that could merge two. Both modules answer with `previousSize` alongside the new one,
+because the body it replaced is gone by the time the answer arrives. The queue's or topic's maximum
+message length applies exactly as it does to a send or a publish, so sending something short and then
+growing it is not a way around a limit.
+
+On a topic it corrects **the record rather than the delivery**: a publish fans a message out to its
+subscribers immediately, so the copies that already left are past changing. What this reaches is the
+copy ENS still holds - what `listMessages` and `getMessage` answer with, and what `resendMessages`
+would send.
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
 What a topic does with a message is the whole difference from a queue: a queue holds one until a

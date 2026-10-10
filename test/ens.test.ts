@@ -470,6 +470,26 @@ describe("published messages", () => {
   });
 });
 
+describe("changing a published message", () => {
+  it("corrects the copy the topic still holds", async () => {
+    gateway.answer("ens", "update-message-body", {
+      messageId: "message-1",
+      topicErn: TOPIC,
+      size: 64,
+      previousSize: 20,
+      contentType: "application/json",
+    });
+
+    const updated = await ens.updateMessageBody("message-1", '{"corrected":true}');
+
+    assert.deepEqual(gateway.last().json(), { messageId: "message-1", body: '{"corrected":true}' });
+    assert.deepEqual([updated.size, updated.previousSize], [64, 20]);
+    assert.equal(updated.topicErn, TOPIC);
+    // What this reaches is the record - what listMessages, getMessage and a resend see. The copies
+    // a publish already fanned out to subscribers are past changing.
+  });
+});
+
 // -- subscriptions ----------------------------------------------------------------------------------
 
 describe("subscriptions", () => {

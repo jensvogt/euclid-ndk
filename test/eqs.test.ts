@@ -487,6 +487,41 @@ describe("messages", () => {
     assert.deepEqual(gateway.last().json(), { messageId: "message-1", visibility: 120 });
   });
 
+  it("replaces a message body and says what it replaced", async () => {
+    gateway.answer("eqs", "update-message-body", {
+      messageId: "message-1",
+      queueErn: QUEUE,
+      size: 42,
+      previousSize: 13,
+      contentType: "application/json",
+    });
+
+    const updated = await eqs.updateMessageBody("message-1", '{"order":"4711","retry":true}');
+
+    assert.deepEqual(gateway.last().json(), {
+      messageId: "message-1",
+      body: '{"order":"4711","retry":true}',
+    });
+    // The size it was is the one thing a caller cannot go back and look up: the body it replaced is
+    // gone by the time this answer arrives.
+    assert.deepEqual([updated.size, updated.previousSize], [42, 13]);
+    assert.equal(updated.contentType, "application/json");
+  });
+
+  it("leaves a body over the queue's limit to the server to refuse", async () => {
+    // The limit is the queue's, so it is the queue that knows it - and sending something short and
+    // then growing it must not be a way around what sendMessage would have refused.
+    gateway.answer("eqs", "update-message-body", { error: "message is 2048 bytes, and this queue accepts 1024" }, 400);
+
+    await assert.rejects(
+      () => eqs.updateMessageBody("message-1", "x".repeat(2048)),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["update-message-body", 400]);
+        return true;
+      },
+    );
+  });
+
   it("types attributes and keeps the server's own field names", async () => {
     // `name` on the way in, `key` on the way out: the server's asymmetry, reproduced rather than
     // papered over.
