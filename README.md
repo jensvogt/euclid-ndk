@@ -2,10 +2,11 @@
 
 Node.js client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
-Eleven modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
-EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets), EAG (the
-API gateway), ETS (FTP and SFTP servers) and EMO (monitoring) are reached from the session it hands back.
-EES is the one module still to come, and speaks the same protocol over the same client.
+Twelve modules so far. EAM - euclid's access management module - is where a login comes from; ESM
+(storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets),
+EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring) and EMM (the module manager itself) are
+reached from the session it hands back. EES is the one module still to come, and speaks the same protocol
+over the same client.
 
 Requires Node 20 or newer, and **has no dependencies**. Installing this SDK does not bring a TLS
 stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and the
@@ -68,7 +69,8 @@ const { total, items } = await session.listAccounts({ pageSize: 5 });
 ```
 
 The other modules hang off that session - `session.esm()`, `session.eqs()`, `session.ens()`,
-`session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()`, `session.emo()` - and each answers
+`session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()`, `session.emo()`,
+`session.emm()` - and each answers
 with the same client every time, so asking for one inside a loop costs one connection rather than one
 per iteration:
 
@@ -1084,6 +1086,104 @@ const mean = await emo.average({ name: "invoice.parse.total" });
 A row's `value` is the mean for a gauge and the sum for a rate - `type` says which, in upper case, where a push
 spells it in lower - and `minValue`/`maxValue` survive a rollup, so an hourly row still knows the worst five
 minutes inside it.
+
+## What EMM covers
+
+`session.emm()` answers with the module manager. Every action is administrator-only server-side, and more
+plainly so than elsewhere: between them they expose every module's live process pool and every module's raw
+collections.
+
+| Method | Action |
+| --- | --- |
+| `listModules`, `findModule` | every module the manager runs, and the processes in each |
+| `setInstances`, `setThreads` | how many instances a pool may run, and how many threads each runs |
+| `setLogLevel`, `resetLogLevel` | what one module logs, without restarting it |
+| `stopModule`, `startModule`, `restartModule` | taking a module out of service, and cycling one |
+| `exportArchive`, `importArchive` | the module collections as documents, out of the database and back in |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+Two unrelated jobs live here, together because both are about the installation rather than anything stored
+in it: the module pools, and export/import.
+
+### The pools
+
+```ts
+const emm = session.emm();
+
+for (const module of await emm.listModules()) {
+  const running = module.instances.filter((instance) => instance.state === MODULE_RUNNING).length;
+  console.log(`${module.name}  ${running}/${module.instances.length} running`);
+}
+```
+
+This is the only view in euclid that shows a process: pids, hosts, ports, restart counts, and what each
+instance last reported about its own load. "Module" is wider here than the twelve this SDK has clients for -
+an application pool and a transfer server are modules to the manager too - which is what `module.core` says,
+and `listModules` is not scoped by namespace, since these are the installation's processes rather than
+anybody's resources. `findModule` filters that listing client-side, because EMM has no per-module read.
+
+**Nothing here acts immediately.** EMM runs in its own process while the pools live in the manager's, so
+every control action records what was asked for and the manager picks it up on its next reconcile, within a
+second or so. That is also why these survive a restart: they are written on the module document, and
+start-up applies them over `euclid.json`. Every result's `runningInstances` is therefore the pool *before*
+the manager has acted - a measure of what the change will cost rather than of what it has done.
+
+**-1 means "nothing was said", and is not zero.** `desiredMinInstances`, `desiredMaxInstances` and
+`desiredThreads` are the limits asked for and not yet reconciled, `-1` when nothing is pending - which is
+why a caller adjusting a limit twice in quick succession can see the second change for what it is. On an
+instance, `utilisation` and `backlog` are `-1` when it has never reported: a module that does not report, an
+SDK too old to know how, or a call being refused. A pool whose floor reads `0` has been asked to scale away
+when idle; one that reads `-1` has been asked nothing.
+
+`stopModule` and `startModule` are for core modules only - an application's desired state belongs to EAP and
+a transfer server's to ETS, and anything recorded here for them would be undone within seconds, so the
+server refuses it and says which call to use. `emm` cannot stop itself either: every other module can be
+brought back with the call this is, and that one could not. `restartModule` *is* allowed for applications and
+transfer servers, because it changes no desired state - the same instances come straight back, one per
+reconcile tick, so the module keeps serving out of the ones not yet reached. A module that is stopped is
+refused: there is nothing to restart, and honouring it would start what somebody asked to have stopped.
+
+`setThreads` is the one change that cannot be applied to a running process - a thread count is fixed when
+one starts - so the manager cycles the instances for it. `setLogLevel` needs no restart at all.
+
+### Export and import
+
+The module collections as documents: a backup, a copy of one installation into another, and the one way to
+look at what euclid stores without a database client. It is the same file `euclid-cli emm export` writes, and
+either tool reads the other's.
+
+```ts
+const archive = await emm.exportArchive({ modules: ["esm", "eqs"], full: true, passphrase });
+await writeFile("backup.json", JSON.stringify(archive));
+
+const result = await emm.importArchive(JSON.parse(await readFile("backup.json", "utf8")), { passphrase });
+for (const { collection, imported, failed } of result.imported) console.log(collection, imported, failed);
+```
+
+Exactly one of `all` and `modules` is required - "every module" and "these modules" are different enough
+requests that the server will not guess between them. `full` adds the bulk child data (EQS and ENS messages,
+ESM objects); without it an archive holds the resources and not their contents, which is usually what
+somebody inspecting an installation wants and always much smaller.
+
+**What an archive is worth.** It carries access-key secrets, and EKM's key material if `ekm` was asked for -
+base64-encoded, not encrypted, because a key store restored without its keys restores nothing. So `ekm`
+cannot be exported without a `passphrase`, and the server refuses it rather than writing one. A sealed
+archive holds nothing worth anything without the passphrase; the envelope around it stays readable - which
+modules, when, and how to derive the key - which is enough to tell what a file is and to ask for the right
+passphrase. What that protects is the file and not the action: anybody who may call this may call it again
+without a passphrase.
+
+A sealed export of named modules is **one request per module**, every frame sealed under one key, which is
+why the archive carries `frames` rather than a single payload - a file holding ten modules is then not also
+one response holding them. `exportArchive` does that loop and the salt-sharing itself; `all` stays a single
+request, since there is nothing to tie together.
+
+An import upserts each document by its `_id`, replacing the whole document rather than merging fields, so
+what lands matches the export exactly. A wrong passphrase and an altered file fail the same way and nothing
+is written when they do - the archive is authenticated as it is opened, so a half-imported archive is not a
+state this can leave behind. Read `result.skipped` rather than the absence of an error: a collection this
+installation does not recognise is reported rather than refused, so an import that wrote nothing at all
+still succeeds.
 
 ## Development
 

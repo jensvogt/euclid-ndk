@@ -12,9 +12,10 @@
  * session.close();
  * ```
  *
- * Eleven modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
- * EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets), EAG (the API
- * gateway), ETS (FTP and SFTP servers) and EMO (monitoring) are reached from the session it hands back:
+ * Twelve modules so far. EAM - euclid's access management module - is where a login comes from; ESM
+ * (storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets),
+ * EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring) and EMM (the module manager itself)
+ * are reached from the session it hands back:
  *
  * ```ts
  * const bucket = await session.esm().createBucket("reports");
@@ -122,6 +123,21 @@ export type {
   KeyDescriptionResult,
   RevokeKeyResult,
 } from "./dto/ekm.js";
+export type {
+  Archive,
+  ImportResult,
+  ImportedCollection,
+  InstanceLimitsResult,
+  Module,
+  ModuleInstance,
+  ModuleLogLevelResult,
+  ModuleStateResult,
+  ModuleThreadsResult,
+  PlainArchive,
+  RestartModuleResult,
+  SealedArchive,
+  SkippedCollection,
+} from "./dto/emm.js";
 export type {
   CreateTopicResult,
   ResendResult,
@@ -312,6 +328,23 @@ export {
   type CreateSecretOptions,
   type UpdateSecretChanges,
 } from "./modules/ess.js";
+export {
+  EuclidEmm,
+  MAX_WORKER_THREADS,
+  MODULE_COMPLETED,
+  MODULE_CRASHED,
+  MODULE_PENDING_RESTART,
+  MODULE_RESTARTING,
+  MODULE_RUNNING,
+  MODULE_STARTING,
+  MODULE_STOPPED,
+  MODULE_STOPPING,
+  MODULE_UNKNOWN,
+  NOTHING_PENDING,
+  type ExportOptions,
+  type ImportOptions,
+  type InstanceLimits,
+} from "./modules/emm.js";
 export {
   Counter,
   DEFAULT_STEP_MS,
