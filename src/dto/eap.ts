@@ -72,8 +72,11 @@ export interface Application {
   arguments: string[];
   environment: Record<string, string>;
   /**
-   * The ERNs of the buckets and queues this application was granted, resolved from the names it was
-   * deployed with.
+   * The ERNs of the buckets, queues, topics and secrets this application was granted, resolved from the
+   * names it was deployed with.
+   *
+   * `["*"]` is what a deployment that named none of them gets: every resource in the namespace, which is
+   * the only safe reading of a deployment that says nothing about what it needs.
    */
   resources: string[];
   /**

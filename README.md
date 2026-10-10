@@ -676,10 +676,28 @@ is what every application deployed before the versioned runtimes existed says; `
 for 25 does not start on 21, and leaving it to whichever java resolved first made the version an accident of
 the manager's `PATH` - so a versioned runtime is the one to name when the artifact needs one.
 
-The deployment says which buckets and queues the application may reach, and euclid grants those to the
-identity it runs as: a technical principal it creates unless one is named, with no password, no login and
-one access key, so that nothing an application leaks is a person's credential. Those names are resolved in
-the session's namespace, so a deployment cannot grant itself another namespace's bucket by naming it.
+The deployment says which buckets, queues, topics and secrets the application may reach, and euclid grants
+those to the identity it runs as: a technical principal it creates unless one is named, with no password, no
+login and one access key, so that nothing an application leaks is a person's credential. Those names are
+resolved in the session's namespace, so a deployment cannot grant itself another namespace's bucket by
+naming it.
+
+A deployment naming none of the four says nothing about what it needs, and euclid reads that the only way it
+safely can: the application role with `resources: ["*"]` - every resource in the namespace. Naming the lists
+is how an application is held to what it actually uses.
+
+**On an update, the four go together.** The server rebuilds the whole resource list from whatever the request
+carries, so naming `buckets` and `queues` on an application that also holds topics or secrets **revokes those**.
+Pass every list the application should end up with, or none of them:
+
+```ts
+await eap.updateApplication("order-service", {
+  buckets: ["artifacts"],
+  queues: ["orders"],
+  topics: ["order-events"],   // leaving these two out would revoke them
+  secrets: ["db-password"],
+});
+```
 
 An application ID is unique within an account and namespace, not across the installation - so `namespace` is
 the other half of what identifies one, and `runtimeName` is what everything on the host is actually called:
@@ -699,8 +717,9 @@ differing is an application starting up, and the two differing for long is one t
 `updateApplication` sends only the fields it is given, because that is the distinction the server draws,
 as in ESS and EAG below:
 leaving `command` out keeps the stored command, while passing `""` clears it and hands the artifact back
-to the runtime's own interpreter. `buckets` and `queues` are re-resolved together whenever either is
-named - so pass both or neither, since naming one revokes what the other granted. For a new build of the
+to the runtime's own interpreter. `buckets`, `queues`, `topics` and `secrets` are re-resolved together
+whenever any one of them is named - so pass all four or none, since naming one revokes what the others
+granted. For a new build of the
 same application, `redeployApplication` is the call; one that would change neither the version nor the
 checksum is refused, which usually means the new artifact never reached the bucket.
 
@@ -950,7 +969,6 @@ under a client mid-session.
 | `pushMetrics` | adding an application's own measurements to the installation's |
 | `registry` | meters that accumulate in the process and publish on a step |
 | `listMetrics`, `average` | reading the rows back (administrator-only) |
-| `metrics` | EMO's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
 euclid's own modules push their samples here rather than being polled, because a module the autoscaler is

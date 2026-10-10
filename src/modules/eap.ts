@@ -13,9 +13,13 @@
  * ```
  *
  * An application is deployed from an artifact already in a bucket - ESM puts it there, and EAP names it.
- * The deployment says which buckets and queues it may reach, and euclid grants those to the identity it
- * runs as: a technical principal it creates for the application unless one is named, with no password, no
- * login and one access key. Nothing an application leaks is then a person's credential.
+ * The deployment says which buckets, queues, topics and secrets it may reach, and euclid grants those to
+ * the identity it runs as: a technical principal it creates for the application unless one is named, with no
+ * password, no login and one access key. Nothing an application leaks is then a person's credential.
+ *
+ * A deployment that names none of them says nothing about what it needs, and euclid reads that the only way
+ * it safely can: the application role with every resource in the namespace. Naming the four lists is how an
+ * application is held to what it actually uses.
  *
  * Two names for the same things, and the asymmetry is the server's: a deployment names a `bucket` and an
  * `artifact`, and the application that comes back describes a `bucketErn` and an `artifactKey`. Likewise
@@ -141,6 +145,10 @@ export interface CreateApplicationOptions {
   buckets?: readonly string[];
   /** Likewise for queues. */
   queues?: readonly string[];
+  /** Likewise for topics, which it may publish to and subscribe. */
+  topics?: readonly string[];
+  /** Likewise for ESS secrets, which it may read. */
+  secrets?: readonly string[];
   /**
    * An existing user to run as. Left empty, euclid creates a technical principal for the application -
    * which is the better answer, and why this is not required.
@@ -212,10 +220,11 @@ export interface ReportLoadOptions {
  * its values: leaving `command` out leaves the stored command alone, while passing `""` clears it and
  * hands the artifact back to the runtime's own interpreter.
  *
- * `buckets` and `queues` are re-resolved together whenever either is named, so naming one and not the
- * other revokes what the other used to grant. Pass both, or neither. They are resolved in the namespace the
- * application is in *after* this update, which is what makes moving one and re-granting its resources a
- * single call.
+ * `buckets`, `queues`, `topics` and `secrets` are **re-resolved together whenever any one of them is
+ * named**: the server rebuilds the whole resource list from what the request carries, so naming one and
+ * leaving the others out revokes what the others used to grant. Pass every list the application should end
+ * up with, or none of them. They are resolved in the namespace the application is in *after* this update,
+ * which is what makes moving one and re-granting its resources a single call.
  *
  * `namespace` is a move rather than a field change, and the one way an application deployed before
  * applications carried a namespace can acquire one without being deleted and made again - see
@@ -233,8 +242,11 @@ export interface UpdateApplicationChanges {
   command?: string;
   arguments?: readonly string[];
   environment?: Record<string, string>;
+  /** See the note above: naming any one of these four rebuilds the grant from all four. */
   buckets?: readonly string[];
   queues?: readonly string[];
+  topics?: readonly string[];
+  secrets?: readonly string[];
   /** Replaces the whole set; `{}` clears it, which hands the application back to the manager's own host. */
   nodeLabels?: Record<string, string>;
   minInstances?: number;
@@ -257,6 +269,8 @@ const UPDATABLE = [
   "environment",
   "buckets",
   "queues",
+  "topics",
+  "secrets",
   "nodeLabels",
   "minInstances",
   "maxInstances",
@@ -318,6 +332,8 @@ export class EuclidEap extends ModuleClient {
       environment: { ...options.environment },
       buckets: [...(options.buckets ?? [])],
       queues: [...(options.queues ?? [])],
+      topics: [...(options.topics ?? [])],
+      secrets: [...(options.secrets ?? [])],
       nodeLabels: { ...options.nodeLabels },
       user: options.user ?? "",
       minInstances: options.minInstances ?? DEFAULT_MIN_INSTANCES,

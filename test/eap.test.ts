@@ -139,6 +139,8 @@ describe("deploying", () => {
       environment: { TZ: "Europe/Berlin" },
       buckets: [],
       queues: ["orders"],
+      topics: [],
+      secrets: [],
       nodeLabels: {},
       user: "",
       minInstances: 2,
@@ -229,6 +231,37 @@ describe("deploying", () => {
     // When it next fires, computed by the server at the moment the schedule was set - which is what
     // decides a job scheduled at noon is next due tonight rather than overdue since midnight.
     assert.equal(job.nextRunAt, "2026-10-11T02:00:00Z");
+  });
+
+  it("grants topics and secrets, not only buckets and queues", async () => {
+    gateway.answer("eap", "create-application", APPLICATION);
+    gateway.answer("eap", "update-application", APPLICATION);
+
+    await eap.createApplication("order-service", RUNTIME_JAVA, "artifacts", "app.jar", {
+      buckets: ["artifacts"],
+      queues: ["orders"],
+      topics: ["order-events"],
+      secrets: ["db-password"],
+    });
+    const created = gateway.last().json();
+    assert.deepEqual(created["topics"], ["order-events"]);
+    assert.deepEqual(created["secrets"], ["db-password"]);
+
+    // All four on an update, because the server rebuilds the whole resource list from whatever the
+    // request carries: sending buckets and queues alone is what revokes the topics and secrets.
+    await eap.updateApplication("order-service", {
+      buckets: ["artifacts"],
+      queues: ["orders"],
+      topics: ["order-events"],
+      secrets: ["db-password"],
+    });
+    assert.deepEqual(gateway.last().json(), {
+      applicationId: "order-service",
+      buckets: ["artifacts"],
+      queues: ["orders"],
+      topics: ["order-events"],
+      secrets: ["db-password"],
+    });
   });
 
   it("asks for a node by label, and clears the ask with an empty set", async () => {
