@@ -132,6 +132,7 @@ export type {
   TopicMetadata,
   TopicRetentionResult,
   TopicStateResult,
+  TopicUpdateMessageBodyResult,
 } from "./dto/ens.js";
 export type { DeleteSecretResult, Secret, SecretValue } from "./dto/ess.js";
 export {
@@ -163,6 +164,7 @@ export type {
   QueueMessageMetadata,
   QueueMetadata,
   QueueStatusResult,
+  QueueUpdateMessageBodyResult,
   RedriveDlqResult,
   RedriveTarget,
   SendBatchFailure,
