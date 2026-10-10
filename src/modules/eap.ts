@@ -21,19 +21,38 @@
  * `artifact`, and the application that comes back describes a `bucketErn` and an `artifactKey`. Likewise
  * the `buckets` and `queues` it is granted come back resolved into `resources`.
  *
- * Every action here is administrator-only, server-side. {@link EuclidSession.isAdmin} says whether the
- * logged-in user is one, though the server enforces it regardless.
+ * Every action that *defines* an application is administrator-only, server-side - which is most of them,
+ * since between them they decide what code euclid executes and under whose identity.
+ * {@link EuclidSession.isAdmin} says whether the logged-in user is one, though the server enforces it
+ * regardless.
+ *
+ * Three things here are not that. {@link EuclidEap.reportLoad} is called by an application about itself, so
+ * it is open to the identity that application runs as and to nobody else. {@link EuclidEap.listNodes},
+ * {@link EuclidEap.getNode} and {@link EuclidEap.drainNode} are open to any authenticated caller, because
+ * reading the fleet and taking a host out of rotation are operations work rather than privilege; only
+ * {@link EuclidEap.deleteNode} needs an administrator, since freeing a node's name is what would let
+ * another principal claim it.
  */
 
 import {
   toApplication,
+  toDeleteNodeResult,
+  toDrainNodeResult,
   toInfrastructureResult,
+  toLoadReport,
   toLogLevelResult,
   toRestartResult,
+  toWorkerNodeDetails,
+  toWorkerNodes,
   type Application,
+  type DeleteNodeResult,
+  type DrainNodeResult,
   type InfrastructureResult,
+  type LoadReport,
   type LogLevelResult,
   type RestartResult,
+  type WorkerNode,
+  type WorkerNodeDetails,
 } from "../dto/eap.js";
 import { ModuleClient } from "./base.js";
 import type { EuclidSession } from "./eam.js";
@@ -74,6 +93,24 @@ export const LOG_OFF = "off";
 export const STATE_RUNNING = "RUNNING";
 export const STATE_STOPPED = "STOPPED";
 
+/**
+ * What kind of thing an application is, and therefore what finishing means.
+ *
+ * A {@link TYPE_PROCESS} is started and kept up: an exit is a fault, the slot is filled again, and the pool
+ * is held at its instance count. That is what everything euclid ran before this field existed is, and what
+ * an application with no type stored still reads as.
+ *
+ * A {@link TYPE_JOB} is started to do one thing and finish. Exit 0 is success rather than a crash to back
+ * off from, the slot is not refilled, and the autoscaler leaves it alone - a backlog says nothing about how
+ * many copies of a one-shot task to run. A nightly import deployed as a PROCESS would be restarted forever,
+ * each completed run reported as a crash, which is the mistake this exists to make impossible to express.
+ *
+ * Matched exactly and in upper case; `job` is refused rather than read as one, because a typo silently
+ * meaning PROCESS is found out the first time a run that was meant to finish is restarted instead.
+ */
+export const TYPE_PROCESS = "PROCESS";
+export const TYPE_JOB = "JOB";
+
 /** What a pool is sized at unless the deployment says otherwise. */
 export const DEFAULT_MIN_INSTANCES = 1;
 export const DEFAULT_MAX_INSTANCES = 1;
@@ -109,12 +146,32 @@ export interface CreateApplicationOptions {
    * which is the better answer, and why this is not required.
    */
   user?: string;
+  /**
+   * The labels a worker node has to carry for this application to be placed on it - `{ os: "windows" }`,
+   * `{ gpu: "true" }`. Left empty, the manager runs the application itself rather than handing it to a
+   * node. A label needs a non-empty string value; the server refuses the set rather than dropping one,
+   * since a label silently dropped is a placement constraint silently dropped.
+   */
+  nodeLabels?: Record<string, string>;
   /** The smallest the pool goes; at least 1. */
   minInstances?: number;
   /** The largest it goes; never below `minInstances`. */
   maxInstances?: number;
   /** How long an instance has to become ready; at least 1000. */
   readyTimeoutMs?: number;
+  /**
+   * {@link TYPE_PROCESS} - the default - for something that stays up, or {@link TYPE_JOB} for something
+   * that runs once and finishes.
+   */
+  type?: string;
+  /**
+   * A cron expression a {@link TYPE_JOB} runs on, in UTC - `"0 2 * * *"`, or `"@daily"`. Only valid
+   * together with `type: TYPE_JOB`: a PROCESS is held at its instance count for as long as it is running,
+   * so a schedule on one would be stored, listed, and never fire - which the server refuses rather than
+   * accepts. An expression that does not parse is refused here and now rather than at the moment it was
+   * due, hours later, in the manager's log.
+   */
+  schedule?: string;
 }
 
 /**
@@ -125,6 +182,27 @@ export interface CreateApplicationOptions {
 export interface ScaleApplicationBounds {
   minInstances?: number;
   maxInstances?: number;
+}
+
+/** Everything a load report says beyond how busy the instance is. */
+export interface ReportLoadOptions {
+  /** How much work is waiting that this instance has not started. */
+  backlog?: number;
+  /**
+   * How much work has been started and not finished, right now - a gauge rather than a counter, so the
+   * newest figure is the whole answer.
+   *
+   * Not a load signal: it says "do not stop me", not "start another one". Scale-down passes over an instance
+   * reporting any, because work in flight is work a second instance cannot take over - stopping the instance
+   * abandons it and it has to be done again. A listener part-way through a message is the case this is for.
+   */
+  active?: number;
+  /**
+   * The application being reported for. Only needed by an application deployed with a *named* user, since
+   * one running as its own `app-<runtimeName>` principal already says which pool it is. The caller has to be
+   * the identity that application runs as.
+   */
+  applicationId?: string;
 }
 
 /**
@@ -142,17 +220,12 @@ export interface ScaleApplicationBounds {
  * `namespace` is a move rather than a field change, and the one way an application deployed before
  * applications carried a namespace can acquire one without being deleted and made again - see
  * {@link EuclidEap.updateApplication}.
+ *
+ * `type` and `schedule` are a pair the server checks *after* both have been applied, so a `JOB` being turned
+ * back into a `PROCESS` has to clear its schedule in the same request - a cron expression that only fires on
+ * a job would otherwise sit there having quietly stopped firing. An empty `schedule` unschedules, which is
+ * how a job goes back to running on demand without being redefined.
  */
-/**
- * The instance bounds {@link EuclidEap.scaleApplication} sets. Either may be left out, which leaves that
- * bound as it stands - so a ceiling can be raised without touching the floor. The same number for both pins
- * the pool at that size and leaves the autoscaler nothing to decide.
- */
-export interface ScaleApplicationBounds {
-  minInstances?: number;
-  maxInstances?: number;
-}
-
 export interface UpdateApplicationChanges {
   runtime?: string;
   artifact?: string;
@@ -162,9 +235,15 @@ export interface UpdateApplicationChanges {
   environment?: Record<string, string>;
   buckets?: readonly string[];
   queues?: readonly string[];
+  /** Replaces the whole set; `{}` clears it, which hands the application back to the manager's own host. */
+  nodeLabels?: Record<string, string>;
   minInstances?: number;
   maxInstances?: number;
   readyTimeoutMs?: number;
+  /** {@link TYPE_PROCESS} or {@link TYPE_JOB}; anything else is refused rather than left as it was. */
+  type?: string;
+  /** A cron expression, or `""` to unschedule. Only valid while the application is a {@link TYPE_JOB}. */
+  schedule?: string;
   namespace?: string;
 }
 
@@ -178,9 +257,12 @@ const UPDATABLE = [
   "environment",
   "buckets",
   "queues",
+  "nodeLabels",
   "minInstances",
   "maxInstances",
   "readyTimeoutMs",
+  "type",
+  "schedule",
   "namespace",
 ] as const satisfies readonly (keyof UpdateApplicationChanges)[];
 
@@ -210,7 +292,7 @@ export class EuclidEap extends ModuleClient {
    * The namespace is the session's, and the buckets and queues named here are resolved in it: a deployment
    * cannot grant itself another namespace's bucket by naming it.
    *
-   * @param applicationId aoolication ID
+   * @param applicationId application ID
    * @param runtime {@link RUNTIME_JAVA}, {@link RUNTIME_JAVA21}, {@link RUNTIME_JAVA25},
    *   {@link RUNTIME_PYTHON}, {@link RUNTIME_NODEJS} or
    *   {@link RUNTIME_BINARY}.
@@ -236,10 +318,13 @@ export class EuclidEap extends ModuleClient {
       environment: { ...options.environment },
       buckets: [...(options.buckets ?? [])],
       queues: [...(options.queues ?? [])],
+      nodeLabels: { ...options.nodeLabels },
       user: options.user ?? "",
       minInstances: options.minInstances ?? DEFAULT_MIN_INSTANCES,
       maxInstances: options.maxInstances ?? DEFAULT_MAX_INSTANCES,
       readyTimeoutMs: options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
+      type: options.type ?? "",
+      schedule: options.schedule ?? "",
     });
   }
 
@@ -445,6 +530,112 @@ export class EuclidEap extends ModuleClient {
    */
   async resetLogLevel(applicationId: string): Promise<LogLevelResult> {
     return this.setLogLevel(applicationId, "");
+  }
+
+  // -- load ------------------------------------------------------------------------------------
+
+  /**
+   * Tells euclid how loaded this instance is, which is what the autoscaler grows and shrinks the pool on.
+   *
+   * Called by an application about itself, on its own timer. `instanceId` is the one euclid handed the
+   * process in `EUCLID_INSTANCE_ID`: a report that cannot say which slot of which pool it came from is
+   * refused rather than attributed to the wrong one, which is how nine hundred reports can land nowhere
+   * while every call answers 200.
+   *
+   * An application deployed without a user of its own runs as `app-<runtimeName>`, which already says which
+   * pool it is, so nothing else is needed. One deployed *with* a named user has to pass `applicationId`, and
+   * has to be the identity that application runs as - an application able to report another's load could
+   * drive somebody else's pool to its ceiling or its floor.
+   *
+   * **This is not a metric.** Push the same numbers to {@link import("./emo.js").EuclidEmo.pushMetrics} as
+   * well if you want the history: that path aggregates into five-minute buckets, which is right for a graph
+   * and five minutes too slow for a control loop.
+   *
+   * @param instanceId this instance, from `EUCLID_INSTANCE_ID`
+   * @param utilisation how busy, 0-100; the server clamps it to that range and answers with what it stored
+   * @param options the rest of the report - all optional, and all meaning zero or "me" when left out
+   */
+  async reportLoad(instanceId: string, utilisation: number, options: ReportLoadOptions = {}): Promise<LoadReport> {
+    return toLoadReport(
+      await this.call("report-load", {
+        instanceId,
+        utilisation,
+        backlog: options.backlog ?? 0,
+        active: options.active ?? 0,
+        applicationId: options.applicationId ?? "",
+      }),
+    );
+  }
+
+  // -- worker nodes ----------------------------------------------------------------------------
+
+  /**
+   * The worker nodes registered to this account, live or not.
+   *
+   * A node registers itself and renews a lease, so this is the fleet as it has reported itself rather than
+   * anything configured here. A node that stopped renewing stays in the listing with `live: false`, which is
+   * what tells an absent host from a deregistered one.
+   *
+   * A list rather than a page, as {@link listApplications} is: the server answers with every node at once,
+   * and an installation has tens of hosts rather than thousands. Unlike an application listing this is not
+   * scoped by namespace - a host belongs to the account and runs whatever it is given.
+   */
+  async listNodes(): Promise<WorkerNode[]> {
+    return toWorkerNodes(await this.call("list-nodes"));
+  }
+
+  /**
+   * One node, and what it is holding slots for.
+   *
+   * The `applications` list is the reason this exists next to {@link listNodes}: working it out means
+   * walking every pool once, so the server answers it for one node and not for a listing. Each entry says
+   * how many slots this node holds and how many are actually serving out of them.
+   *
+   * @param node the node's name, as it registered itself
+   */
+  async getNode(node: string): Promise<WorkerNodeDetails> {
+    return toWorkerNodeDetails(await this.call("get-node", { node }));
+  }
+
+  /**
+   * Stops new instances being placed on a node, and lets the ones it has leave as they are replaced.
+   *
+   * Not a stop. The node keeps running what it has and keeps renewing its lease - a node that downed tools
+   * on being drained would make draining an outage. What changes is that the manager refuses it new
+   * assignments, so the pool drifts off it as instances are replaced elsewhere, and the host is empty when
+   * it is empty rather than at a moment somebody chose.
+   *
+   * Taking a host out of service for good is this, then stopping the worker, then
+   * {@link deleteNode} - in that order. {@link deleteNode} on its own does not stop a node: a worker that
+   * is still running finds itself unregistered on its next renewal and registers again.
+   *
+   * @param node the node's name
+   * @param drained `false` puts it back into service - see {@link resumeNode}, which says that in a word
+   */
+  async drainNode(node: string, drained = true): Promise<DrainNodeResult> {
+    return toDrainNodeResult(await this.call("drain-node", { node, drained }));
+  }
+
+  /** Puts a drained node back into service, so the manager places instances on it again. */
+  async resumeNode(node: string): Promise<DrainNodeResult> {
+    return this.drainNode(node, false);
+  }
+
+  /**
+   * Removes a node's registration, which is how its name is freed for another host.
+   *
+   * Administrator-only, unlike the other node actions, and for exactly that reason: a name is bound to the
+   * principal that registered it, so a worker able to delete another's registration could re-register under
+   * its name and be handed its assignments and its applications' credentials.
+   *
+   * This does not stop anything. The leases are left alone, and a worker that is still running registers
+   * itself again on its next renewal - so {@link drainNode} and stopping the worker are what take a host out
+   * of service, and this is what forgets it afterwards.
+   *
+   * @param node the node's name; one that is not registered is HTTP 404
+   */
+  async deleteNode(node: string): Promise<DeleteNodeResult> {
+    return toDeleteNodeResult(await this.call("delete-node", { node }));
   }
 
   // -- monitoring ------------------------------------------------------------------------------

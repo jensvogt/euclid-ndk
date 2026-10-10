@@ -91,7 +91,19 @@ export type {
   ListenerCertificate,
   Route,
 } from "./dto/eag.js";
-export type { Application, Endpoint, InfrastructureResult, LogLevelResult, RestartResult } from "./dto/eap.js";
+export type {
+  Application,
+  DeleteNodeResult,
+  DrainNodeResult,
+  Endpoint,
+  InfrastructureResult,
+  LoadReport,
+  LogLevelResult,
+  RestartResult,
+  WorkerNode,
+  WorkerNodeApplication,
+  WorkerNodeDetails,
+} from "./dto/eap.js";
 export {
   CREATED_ATTRIBUTE,
   MODIFIED_ATTRIBUTE,
@@ -231,7 +243,10 @@ export {
   RUNTIME_PYTHON,
   STATE_RUNNING,
   STATE_STOPPED,
+  TYPE_JOB,
+  TYPE_PROCESS,
   type CreateApplicationOptions,
+  type ReportLoadOptions,
   type ScaleApplicationBounds,
   type UpdateApplicationChanges,
 } from "./modules/eap.js";

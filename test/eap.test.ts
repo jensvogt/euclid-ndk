@@ -23,9 +23,12 @@ import {
   RUNTIME_PYTHON,
   STATE_RUNNING,
   STATE_STOPPED,
+  TYPE_JOB,
+  TYPE_PROCESS,
   type EuclidEap,
   type EuclidSession,
 } from "../src/index.js";
+import { toApplication } from "../src/dto/eap.js";
 import { EuclidServiceError } from "../src/errors.js";
 import { FakeGateway, prepareLogin } from "./fake-gateway.js";
 
@@ -45,11 +48,16 @@ const APPLICATION = {
   arguments: ["--server.port=0"],
   environment: { TZ: "Europe/Berlin" },
   resources: ["ern:eqs:queue/orders"],
+  nodeLabels: {},
   userId: "app-order-service",
+  userExists: true,
   logLevel: "",
   minInstances: 2,
   maxInstances: 5,
   readyTimeoutMs: 30000,
+  type: "PROCESS",
+  schedule: "",
+  nextRunAt: "",
   desiredState: "RUNNING",
   state: "RUNNING",
   instances: 2,
@@ -59,6 +67,20 @@ const APPLICATION = {
   ],
   created: "2026-09-01",
   modified: "2026-09-10",
+};
+
+const NODE = {
+  name: "worker-01",
+  address: "10.0.0.17:5566",
+  principal: "worker-01",
+  labels: { os: "linux", gpu: "true" },
+  cpuCount: 16,
+  version: "1.2.20",
+  os: "Linux",
+  arch: "x86_64",
+  drained: false,
+  live: true,
+  lastSeen: "2026-10-10T08:30:00Z",
 };
 
 let gateway: FakeGateway;
@@ -117,10 +139,15 @@ describe("deploying", () => {
       environment: { TZ: "Europe/Berlin" },
       buckets: [],
       queues: ["orders"],
+      nodeLabels: {},
       user: "",
       minInstances: 2,
       maxInstances: 5,
       readyTimeoutMs: 30000,
+      // Both empty, which is what says "a PROCESS, on no schedule" - the server reads these only when
+      // they carry something, so a deployment that mentions neither is the one it always was.
+      type: "",
+      schedule: "",
     });
 
     assert.equal(application.bucketErn, "ern:esm:bucket/artifacts");
@@ -176,6 +203,50 @@ describe("deploying", () => {
     assert.deepEqual(gateway.last().json(), { applicationId: "order-service", minInstances: 2, maxInstances: 2 });
   });
 
+  it("deploys a job on a schedule", async () => {
+    gateway.answer("eap", "create-application", {
+      ...APPLICATION,
+      applicationId: "nightly-import",
+      type: "JOB",
+      schedule: "0 2 * * *",
+      nextRunAt: "2026-10-11T02:00:00Z",
+      desiredState: "STOPPED",
+      state: "STOPPED",
+      instances: 0,
+      endpoints: [],
+    });
+
+    const job = await eap.createApplication("nightly-import", RUNTIME_JAVA, "artifacts", "import-1.0.0.jar", {
+      type: TYPE_JOB,
+      schedule: "0 2 * * *",
+    });
+
+    const body = gateway.last().json();
+    assert.equal(body["type"], "JOB");
+    assert.equal(body["schedule"], "0 2 * * *");
+
+    assert.deepEqual([job.type, job.schedule], [TYPE_JOB, "0 2 * * *"]);
+    // When it next fires, computed by the server at the moment the schedule was set - which is what
+    // decides a job scheduled at noon is next due tonight rather than overdue since midnight.
+    assert.equal(job.nextRunAt, "2026-10-11T02:00:00Z");
+  });
+
+  it("asks for a node by label, and clears the ask with an empty set", async () => {
+    gateway.answer("eap", "create-application", { ...APPLICATION, nodeLabels: { os: "windows" } });
+    gateway.answer("eap", "update-application", APPLICATION);
+
+    const placed = await eap.createApplication("order-service", RUNTIME_JAVA, "artifacts", "app.jar", {
+      nodeLabels: { os: "windows" },
+    });
+    assert.deepEqual(gateway.last().json()["nodeLabels"], { os: "windows" });
+    assert.deepEqual(placed.nodeLabels, { os: "windows" });
+
+    // An empty set is a value rather than an omission: it takes the application back to the manager's
+    // own host, so it has to reach the server.
+    await eap.updateApplication("order-service", { nodeLabels: {} });
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", nodeLabels: {} });
+  });
+
   it("sends only what an update was given", async () => {
     gateway.answer("eap", "update-application", APPLICATION);
 
@@ -205,6 +276,26 @@ describe("deploying", () => {
       environment: {},
       readyTimeoutMs: 60000,
       namespace: "production",
+    });
+  });
+
+  it("turns a running process into a scheduled job, and back", async () => {
+    gateway.answer("eap", "update-application", { ...APPLICATION, type: "JOB", schedule: "@daily" });
+
+    await eap.updateApplication("nightly-import", { type: TYPE_JOB, schedule: "@daily" });
+    assert.deepEqual(gateway.last().json(), {
+      applicationId: "nightly-import",
+      type: "JOB",
+      schedule: "@daily",
+    });
+
+    // Both in one request going the other way, because the server checks the pair after applying both:
+    // a JOB turned back into a PROCESS keeping a schedule would be one that quietly stopped firing.
+    await eap.updateApplication("nightly-import", { type: TYPE_PROCESS, schedule: "" });
+    assert.deepEqual(gateway.last().json(), {
+      applicationId: "nightly-import",
+      type: "PROCESS",
+      schedule: "",
     });
   });
 
@@ -416,6 +507,129 @@ describe("running", () => {
 
 // -- logging --------------------------------------------------------------------------------------
 
+describe("worker nodes", () => {
+  it("lists the fleet, live or not", async () => {
+    gateway.answer("eap", "list-nodes", {
+      total: 2,
+      nodes: [NODE, { ...NODE, name: "worker-02", live: false, drained: true, lastSeen: "2026-10-09T22:00:00Z" }],
+    });
+
+    const nodes = await eap.listNodes();
+
+    assert.deepEqual(nodes.map((node) => node.name), ["worker-01", "worker-02"]);
+    assert.deepEqual(nodes[0]?.labels, { os: "linux", gpu: "true" });
+    assert.equal(nodes[0]?.cpuCount, 16);
+    // A node that stopped renewing is still registered, and still has whatever it was running on
+    // record - which is how an absent host is told from a deregistered one.
+    assert.deepEqual([nodes[1]?.live, nodes[1]?.drained], [false, true]);
+  });
+
+  it("says what one node is holding slots for", async () => {
+    gateway.answer("eap", "get-node", {
+      ...NODE,
+      applications: [
+        {
+          applicationId: "order-service",
+          runtimeName: "order-service-4k7m2q",
+          namespace: "development",
+          runtime: "JAVA",
+          instances: 4,
+          running: 3,
+        },
+      ],
+    });
+
+    const node = await eap.getNode("worker-01");
+
+    assert.deepEqual(gateway.last().json(), { node: "worker-01" });
+    assert.equal(node.name, "worker-01");
+    // Slots held and slots serving, separately: four held with three running is exactly the state a
+    // single count cannot report.
+    assert.deepEqual([node.applications[0]?.instances, node.applications[0]?.running], [4, 3]);
+    assert.equal(node.applications[0]?.applicationId, "order-service");
+  });
+
+  it("drains a node and puts it back", async () => {
+    gateway.answer("eap", "drain-node", { node: "worker-01", drained: true });
+
+    const drained = await eap.drainNode("worker-01");
+    assert.deepEqual(gateway.last().json(), { node: "worker-01", drained: true });
+    assert.equal(drained.drained, true);
+
+    // resumeNode is the same action saying false, because there is no separate undrain to send.
+    gateway.answer("eap", "drain-node", { node: "worker-01", drained: false });
+    const resumed = await eap.resumeNode("worker-01");
+    assert.deepEqual(gateway.last().json(), { node: "worker-01", drained: false });
+    assert.equal(resumed.drained, false);
+  });
+
+  it("forgets a node that is gone for good", async () => {
+    gateway.answer("eap", "delete-node", { node: "worker-02", deleted: true });
+
+    const deleted = await eap.deleteNode("worker-02");
+
+    assert.deepEqual(gateway.last().json(), { node: "worker-02" });
+    assert.deepEqual([deleted.node, deleted.deleted], ["worker-02", true]);
+  });
+
+  it("rejects when a node is not registered", async () => {
+    gateway.answer("eap", "get-node", { error: "Node is not registered, node: worker-09" }, 404);
+
+    await assert.rejects(
+      () => eap.getNode("worker-09"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["get-node", 404]);
+        return true;
+      },
+    );
+  });
+});
+
+describe("reporting load", () => {
+  it("names the instance, and defaults the rest to zero", async () => {
+    gateway.answer("eap", "report-load", { instanceId: "i-1", utilisation: 42, backlog: 0, active: 0 });
+
+    const report = await eap.reportLoad("i-1", 42);
+
+    // applicationId empty is how an application running as its own app-<runtimeName> principal says
+    // "me": the server reads the pool off the caller's identity.
+    assert.deepEqual(gateway.last().json(), {
+      instanceId: "i-1",
+      utilisation: 42,
+      backlog: 0,
+      active: 0,
+      applicationId: "",
+    });
+    assert.deepEqual([report.instanceId, report.utilisation], ["i-1", 42]);
+  });
+
+  it("carries a backlog, work in flight, and the application a named user reports for", async () => {
+    gateway.answer("eap", "report-load", { instanceId: "i-2", utilisation: 90, backlog: 120, active: 3 });
+
+    const report = await eap.reportLoad("i-2", 90, { backlog: 120, active: 3, applicationId: "parser-dev" });
+
+    assert.deepEqual(gateway.last().json(), {
+      instanceId: "i-2",
+      utilisation: 90,
+      backlog: 120,
+      active: 3,
+      applicationId: "parser-dev",
+    });
+    assert.deepEqual([report.backlog, report.active], [120, 3]);
+  });
+
+  it("answers with what the server stored rather than what was sent", async () => {
+    // Clamped to 0-100 server-side, which is worth reading back: a client reporting 150 learns here
+    // that euclid recorded 100.
+    gateway.answer("eap", "report-load", { instanceId: "i-1", utilisation: 100, backlog: 0, active: 0 });
+
+    const report = await eap.reportLoad("i-1", 150);
+
+    assert.equal(gateway.last().json()["utilisation"], 150);
+    assert.equal(report.utilisation, 100);
+  });
+});
+
 describe("logging", () => {
   it("sets a level and takes it back", async () => {
     gateway.answer("eap", "set-log-level", {
@@ -497,6 +711,21 @@ describe("how EAP behaves", () => {
     // Three distinct runtimes, not one with aliases: a jar built for 25 does not start on 21, so
     // asking for one and getting the other is the failure these exist to prevent.
     assert.equal(new Set([RUNTIME_JAVA, RUNTIME_JAVA21, RUNTIME_JAVA25]).size, 3);
+  });
+
+  it("exports the two application types, and reads a missing one as PROCESS", async () => {
+    assert.deepEqual([TYPE_PROCESS, TYPE_JOB], ["PROCESS", "JOB"]);
+
+    // What an installation older than the field answers. A PROCESS is what such a definition has
+    // always behaved as, so reading it as "" - or guessing JOB - would be this SDK inventing a
+    // change of behaviour the server never made.
+    const { type, schedule, nextRunAt, userExists } = toApplication({ applicationId: "legacy" });
+    assert.deepEqual([type, schedule, nextRunAt], [TYPE_PROCESS, "", ""]);
+
+    // And the one flag here that defaults to true: false is an alarm - the identity this application
+    // runs as has been deleted - so a server that did not say must not raise it.
+    assert.equal(userExists, true);
+    assert.equal(toApplication({ applicationId: "gone", userExists: false }).userExists, false);
   });
 
   it("answers metrics unparsed and reaches unwrapped actions", async () => {

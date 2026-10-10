@@ -640,6 +640,8 @@ while `scan` reads the table, which is right for an export and wrong for a looku
 | `startApplication`, `stopApplication`, `restartApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
 | `applyInfrastructure` | making the installation match the application's own declaration |
 | `setLogLevel`, `resetLogLevel` | what one application logs, without restarting it |
+| `reportLoad` | an application telling euclid how busy it is, which is what the autoscaler acts on |
+| `listNodes`, `getNode`, `drainNode`, `resumeNode`, `deleteNode` | the worker nodes applications are placed on |
 | `metrics` | EAP's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
@@ -690,6 +692,92 @@ to the runtime's own interpreter. `buckets` and `queues` are re-resolved togethe
 named - so pass both or neither, since naming one revokes what the other granted. For a new build of the
 same application, `redeployApplication` is the call; one that would change neither the version nor the
 checksum is refused, which usually means the new artifact never reached the bucket.
+
+### Jobs and schedules
+
+An application is a `PROCESS` or a `JOB`, and the difference is what finishing means:
+
+```ts
+import { TYPE_JOB } from "euclid-ndk";
+
+await eap.createApplication("nightly-import", RUNTIME_JAVA, "artifacts", "import-1.0.0.jar", {
+  type: TYPE_JOB,
+  schedule: "0 2 * * *",   // UTC; "@daily" works too
+});
+```
+
+A `PROCESS` is started and kept up: an exit is a fault, the slot is filled again, and the pool is held at
+its instance count. That is what everything euclid ran before this field existed is, and what an
+application with no type stored still reads as - including against a euclid too old to report one.
+
+A `JOB` runs to completion. Exit 0 is success rather than a crash to back off from, the slot is not
+refilled, and the autoscaler leaves it alone, since a backlog says nothing about how many copies of a
+one-shot task to run. A nightly import deployed as a `PROCESS` is restarted forever, every completed run
+recorded as a crash - which is the mistake the type exists to make impossible to express.
+
+A `schedule` is only valid on a `JOB`, and the server refuses one on a `PROCESS` rather than storing a cron
+expression that will never fire. An expression that does not parse is refused at the moment it is set, not
+hours later when it was due. `Application.nextRunAt` is when it fires next, computed server-side when the
+schedule was set - and **empty when there is no schedule**, rather than the epoch, which would read as a job
+fifty years overdue. An empty `schedule` unschedules, putting a job back to running on demand.
+
+Changing a job back into a process has to clear the schedule in the same `updateApplication` call: the
+server checks the pair once both have been applied, so this is refused rather than left as a schedule that
+silently stopped firing.
+
+```ts
+await eap.updateApplication("nightly-import", { type: TYPE_PROCESS, schedule: "" });
+```
+
+### Worker nodes
+
+An application runs on the manager's own host unless it asks for somewhere else. `nodeLabels` is that ask -
+`{ os: "windows" }`, `{ gpu: "true" }` - matched against the labels a worker node registered with. An empty
+set, which is the default, hands the application back to the manager.
+
+Nodes register themselves and renew a lease; nothing here configures one. What an operator does is read the
+fleet, empty a host, and forget it once it is gone:
+
+```ts
+const nodes = await eap.listNodes();          // live or not: a node that stopped renewing reads live: false
+const node = await eap.getNode("worker-01");  // and what it is holding slots for
+```
+
+`getNode` is the only one that answers `applications`, each entry saying how many slots this node holds and
+how many are actually serving out of them - a node holding four and running none is the state worth seeing.
+Working that out means walking every pool, which is why a listing does not.
+
+`drainNode` stops new instances being placed on a node and lets the ones it has leave as they are replaced.
+It is **not** a stop: the node keeps running what it has and keeps renewing, because a node that downed
+tools on being drained would make draining an outage. Taking a host out of service is `drainNode`, then
+stopping the worker, then `deleteNode` - in that order. `deleteNode` alone does not stop anything; a worker
+still running re-registers on its next renewal.
+
+Every node action is open to any authenticated caller except `deleteNode`, which needs an administrator:
+a node's name is bound to the principal that registered it, and freeing the name is what would let another
+principal claim it along with its assignments and its applications' credentials.
+
+### Reporting load
+
+An application tells euclid how busy it is, and the autoscaler acts on that:
+
+```ts
+await eap.reportLoad(process.env.EUCLID_INSTANCE_ID, 72, { backlog: 120, active: 3 });
+```
+
+The instance id is the one euclid handed the process in `EUCLID_INSTANCE_ID`. A report that cannot say which
+slot of which pool it came from is refused rather than attributed to the wrong one. An application running as
+its own `app-<runtimeName>` principal already says which pool it is; one deployed with a *named* user passes
+`applicationId` as well, and has to be the identity that application runs as.
+
+`active` - work started and not finished - is not a load signal. It says "do not stop me", not "start
+another one": scale-down passes over an instance reporting any, because work in flight is work a second
+instance cannot take over. The call answers with what the server stored, so a client reporting 150 learns
+that euclid recorded 100.
+
+This is not a metric. Push the same numbers to `session.emo().pushMetrics` as well if you want the history -
+that path aggregates into five-minute buckets, which is right for a graph and five minutes too slow for a
+control loop.
 
 ### Infrastructure declarations
 

@@ -76,12 +76,43 @@ export interface Application {
    * deployed with.
    */
   resources: string[];
+  /**
+   * The labels a worker node has to carry for this application to be placed on it - see
+   * {@link import("../modules/eap.js").EuclidEap.listNodes}. Empty is the ordinary case and means the
+   * manager runs the application itself rather than handing it to a node.
+   */
+  nodeLabels: Record<string, string>;
   userId: string;
+  /**
+   * Whether the identity in {@link userId} still exists.
+   *
+   * `false` is the answer worth having, and why the server reports it: the user is checked when the
+   * application is created and never again, so a principal can be deleted or renamed underneath a definition
+   * that goes on naming it. The application then runs, authenticates as nobody, and is refused everything -
+   * which arrives as "euclid refused my secret" rather than as "this application's user does not exist".
+   */
+  userExists: boolean;
   /** The level this application logs at, or empty when it is under the configured default. */
   logLevel: string;
   minInstances: number;
   maxInstances: number;
   readyTimeoutMs: number;
+  /**
+   * `PROCESS` or `JOB` - what finishing means for this application, and so whether an exit is a fault. See
+   * {@link import("../modules/eap.js").TYPE_JOB}.
+   *
+   * An application stored before the field existed reads as `PROCESS`, which is what it has always behaved
+   * as. A value this SDK does not know reads as itself rather than being mapped onto one of the two: it came
+   * from a newer euclid, and guessing is how a job would be treated as a service.
+   */
+  type: string;
+  /** The cron expression a JOB runs on, in UTC, or empty when it only runs on demand. */
+  schedule: string;
+  /**
+   * When the schedule next fires, as an ISO 8601 instant - **empty when there is no schedule**, rather than
+   * the epoch, which would read as a job fifty years overdue rather than one that is not scheduled at all.
+   */
+  nextRunAt: string;
   /** `RUNNING` or `STOPPED`, as asked for. */
   desiredState: string;
   /** `RUNNING` or `STOPPED`, as observed - which is not the same as having been started. */
@@ -142,6 +173,100 @@ export interface InfrastructureResult {
   revoked: string[];
 }
 
+/**
+ * One worker node: a host that has registered itself with euclid and can be given instances to run.
+ *
+ * A node registers itself and renews a lease; nothing here is configured through this SDK. What an operator
+ * does with a node is read it, drain it, and - once it is gone for good - remove its registration.
+ *
+ * Named `WorkerNode` rather than `Node` because this package runs on Node.js and in a browser-typed
+ * project, where `Node` is already a DOM interface.
+ */
+export interface WorkerNode {
+  name: string;
+  /** Where the manager reaches it. */
+  address: string;
+  /**
+   * The principal that registered this name, and the only one that may renew it: a node able to take over
+   * another's name would be handed its assignments and, with them, its applications' credentials.
+   */
+  principal: string;
+  /**
+   * What this node offers - `os=windows`, `gpu=true` - matched against an application's
+   * {@link Application.nodeLabels} when the manager decides where to place an instance.
+   */
+  labels: Record<string, string>;
+  cpuCount: number;
+  /** The worker's own version, and the platform it reports running on. */
+  version: string;
+  os: string;
+  arch: string;
+  /**
+   * Whether the node is being emptied. A drained node keeps what it is running and keeps renewing - it is
+   * only refused *new* instances, which is the whole difference between draining and stopping.
+   */
+  drained: boolean;
+  /**
+   * Whether the lease is current. A node that stopped renewing reads `live: false` while its registration,
+   * and everything it was running, is still on record - which is how an absent host is told from a
+   * deregistered one.
+   */
+  live: boolean;
+  lastSeen: string;
+}
+
+/**
+ * One application a node is holding slots for.
+ *
+ * `instances` is the slots on this node and `running` the ones actually serving out of them. Both, because
+ * a node holding four slots and running none is exactly the state worth seeing, and one number cannot say
+ * it.
+ */
+export interface WorkerNodeApplication {
+  applicationId: string;
+  runtimeName: string;
+  namespace: string;
+  runtime: string;
+  instances: number;
+  running: number;
+}
+
+/**
+ * A node and what it is running.
+ *
+ * Only {@link import("../modules/eap.js").EuclidEap.getNode} answers with this: the server deliberately
+ * leaves `applications` off a listing, since working it out means walking every pool once per node and a
+ * listing is read to find a node rather than to read what is on it.
+ */
+export interface WorkerNodeDetails extends WorkerNode {
+  applications: WorkerNodeApplication[];
+}
+
+/** A node and whether it is now being emptied. */
+export interface DrainNodeResult {
+  node: string;
+  drained: boolean;
+}
+
+/** The name of a deregistered node, and that it went. */
+export interface DeleteNodeResult {
+  node: string;
+  deleted: boolean;
+}
+
+/**
+ * A load report as the server recorded it, which is not always as it was sent.
+ *
+ * `utilisation` comes back clamped to 0-100 and the two counts floored at zero, so this is worth reading
+ * rather than discarding: a client reporting 150 learns here that euclid stored 100.
+ */
+export interface LoadReport {
+  instanceId: string;
+  utilisation: number;
+  backlog: number;
+  active: number;
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toEndpoint(document: unknown): Endpoint {
@@ -169,11 +294,22 @@ export function toApplication(document: unknown): Application {
     arguments: strings(document, "arguments"),
     environment: stringMap(document, "environment"),
     resources: strings(document, "resources"),
+    nodeLabels: stringMap(document, "nodeLabels"),
     userId: text(document, "userId"),
+    // True when the server did not say, unlike every other flag here, because this one's false is an
+    // alarm: against a euclid too old to report it, defaulting the other way would have every
+    // application claiming its identity had been deleted.
+    userExists: flag(document, "userExists", true),
     logLevel: text(document, "logLevel"),
     minInstances: number(document, "minInstances"),
     maxInstances: number(document, "maxInstances"),
     readyTimeoutMs: number(document, "readyTimeoutMs"),
+    // "PROCESS" when absent, which is the server's own rule for a definition stored before the field
+    // existed: it is one, and has to go on behaving as one. Written out rather than taken from
+    // TYPE_PROCESS so that this file stays below the modules in the import graph.
+    type: text(document, "type") || "PROCESS",
+    schedule: text(document, "schedule"),
+    nextRunAt: text(document, "nextRunAt"),
     desiredState: text(document, "desiredState"),
     state: text(document, "state"),
     instances: number(document, "instances"),
@@ -199,6 +335,61 @@ export function toInfrastructureResult(document: unknown): InfrastructureResult 
     deleted: strings(document, "deleted"),
     granted: strings(document, "granted"),
     revoked: strings(document, "revoked"),
+  };
+}
+
+export function toWorkerNode(document: unknown): WorkerNode {
+  return {
+    name: text(document, "name"),
+    address: text(document, "address"),
+    principal: text(document, "principal"),
+    labels: stringMap(document, "labels"),
+    cpuCount: number(document, "cpuCount"),
+    version: text(document, "version"),
+    os: text(document, "os"),
+    arch: text(document, "arch"),
+    drained: flag(document, "drained"),
+    live: flag(document, "live"),
+    lastSeen: text(document, "lastSeen"),
+  };
+}
+
+export function toWorkerNodes(document: unknown): WorkerNode[] {
+  return documents(document, "nodes").map(toWorkerNode);
+}
+
+export function toWorkerNodeApplication(document: unknown): WorkerNodeApplication {
+  return {
+    applicationId: text(document, "applicationId"),
+    runtimeName: text(document, "runtimeName"),
+    namespace: text(document, "namespace"),
+    runtime: text(document, "runtime"),
+    instances: number(document, "instances"),
+    running: number(document, "running"),
+  };
+}
+
+export function toWorkerNodeDetails(document: unknown): WorkerNodeDetails {
+  return {
+    ...toWorkerNode(document),
+    applications: documents(document, "applications").map(toWorkerNodeApplication),
+  };
+}
+
+export function toDrainNodeResult(document: unknown): DrainNodeResult {
+  return { node: text(document, "node"), drained: flag(document, "drained") };
+}
+
+export function toDeleteNodeResult(document: unknown): DeleteNodeResult {
+  return { node: text(document, "node"), deleted: flag(document, "deleted") };
+}
+
+export function toLoadReport(document: unknown): LoadReport {
+  return {
+    instanceId: text(document, "instanceId"),
+    utilisation: number(document, "utilisation"),
+    backlog: number(document, "backlog"),
+    active: number(document, "active"),
   };
 }
 
