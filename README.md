@@ -277,6 +277,14 @@ calls scopes the second one.
 Buckets and objects are named by ERN, not by name - `createBucket` answers with the one everything
 else takes, and `getBucketErn` is how an existing bucket's is looked up.
 
+`deleteBucket` takes `{ ifEmpty: true }` for "remove it only if nothing is using it" - what an automated
+caller means, as against an operator who has decided the contents go too. A bucket holding anything is then
+refused with 409 naming the count, directory markers included, since a marker is an object somebody's
+transfer client can see. `{ background: true }` is the other half, for a bucket large enough that emptying
+it outlasts the request; the two are never combined, because `ifEmpty` has already established there is
+nothing to empty. EQS's `deleteQueue({ ifEmpty: true })` is the same idea, and counts events still on their
+way into the queue as well - one is about to become a message, and a delete discards it.
+
 `existsBucket` is one of a family - ESM, EQS, ENS, EKM, EKV and ESS each have one, for buckets, queues,
 topics, keys, tables and secrets. All six answer three ways rather than two. `true` and `false` are the
 expected pair; the third is a thrown `EuclidServiceError`, and it is the one that matters. Only HTTP 404 -
@@ -350,6 +358,13 @@ await esm.subscribe(bucket.ern, QUEUE, queueErn, { eventTypes: [OBJECT_CREATED],
 const event = parseBucketEvent(message.body);
 ```
 
+The event carries the object's own **attributes** as well as its key and size, which is the whole point of
+having put them on the object: whatever uploaded it knows things the bucket cannot express - which supplier
+it came from, how urgent it is - and a subscriber that has to read the object to find that out has been told
+the wrong thing. `event.attributes` and `event.systemAttributes` are typed variant maps, empty when the
+notification carried none. Binary values are left out by the server, since a notification is metadata and
+nothing reading one wants a blob inlined into it.
+
 `unsubscribe` takes the subscription's own ERN - not the bucket's, and not the target's. Subscribing
 is not idempotent: a second call delivers every matching event twice, so a caller that may run twice
 checks `listSubscriptions` first.
@@ -383,6 +398,7 @@ sends it either way, because there an empty value is the instruction.
 | Method | Action |
 | --- | --- |
 | `createQueue`, `listQueues`, `getQueueErn`, `existsQueue`, `getQueueMetadata`, `purgeQueue`, `purgeAllQueues`, `deleteQueue` | queues |
+| `deleteQueue({ ifEmpty })`, `purgeQueue({ background })` | removing one only if nothing is using it; emptying a backlog without waiting |
 | `addQueueTag`, `setQueueTag`, `deleteQueueTag` | queue tags |
 | `stopQueue`, `startQueue`, `setQueueVisibility` | what a queue hands out, and for how long |
 | `setQueueDelay`, `setQueueMaxMessageLength` | how long a send is held back, and how large it may be |
@@ -882,7 +898,7 @@ secret is moved off a key that is being retired.
 
 | Method | Action |
 | --- | --- |
-| `createRoute`, `createModuleRoute`, `updateRoute`, `getRoute`, `listRoutes`, `deleteRoute` | published paths |
+| `createRoute`, `createModuleRoute`, `createUploadRoute`, `updateRoute`, `getRoute`, `listRoutes`, `deleteRoute` | published paths |
 | `setRouteActive` | taking one out of service, and putting it back |
 | `listListeners` | the ports the gateway answers on, and whether it is answering |
 | `metrics` | EAG's own metrics |
@@ -911,6 +927,36 @@ application and to euclid's own gateway for its credentials: two ports, two orig
 empty namespace as *the empty namespace* rather than as "unspecified" - sending one would scope the route
 to nothing. `setRouteActive` is how something stops being exposed in a hurry: the route stays exactly as it
 was and comes back the same, which deleting and recreating it would not guarantee.
+
+### Upload routes
+
+A route with no backend: the gateway is the endpoint, and what it does with the body is write it into a
+bucket.
+
+```ts
+await eag.createUploadRoute("inbox", "/upload", bucketErn, {
+  keyPrefix: "incoming/",             // prefixed to the key, which is otherwise the path below the route
+  maxBytes: 100 * 1024 * 1024,        // 0, the default, accepts any size
+  contentTypes: ["text/csv"],         // empty, the default, accepts any type
+  authentication: ROUTE_AUTH_EUCLID,
+});
+```
+
+The difference from a proxy route is not which backend but **who reads the body**: a proxied request is
+buffered whole and handed on, while an upload is streamed into ESM in parts and never held in memory. That
+is why it is a type on the route rather than another field on the one behaviour - the two cannot share a
+request path - and why an upload route naming an application or a module is refused: naming one says the
+author expected the request to be forwarded, and it will not be.
+
+`maxBytes` and `contentTypes` are both answered *before* a byte of the body is read, which is the point of
+matching the route first: a caller sending something this route will not take is told so now - 413 or 415 -
+rather than after spending however long it takes to send it. A `Content-Length` over the limit is refused on
+the header, and a body that turns out longer than it claimed is cut off at the same limit, because the
+header is a claim and the limit is what holds when the claim was a lie.
+
+Keys are checked rather than trusted: an empty path segment, a `.` or `..` segment, or a null byte is
+refused, so a caller cannot climb out of the prefix it was given. A route stored before the type existed
+reads as `ROUTE_PROXY`, which is what it is.
 
 `listListeners` answers with a page of listeners plus `serving`, which says whether the gateway's ports are
 bound at all. A listener whose port was taken, or whose certificate could not be loaded, is still listed -

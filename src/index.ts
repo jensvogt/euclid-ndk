@@ -90,6 +90,7 @@ export type {
   Listener,
   ListenerCertificate,
   Route,
+  RouteUpload,
 } from "./dto/eag.js";
 export type {
   Application,
@@ -165,6 +166,7 @@ export type {
   QueueMetadata,
   QueueStatusResult,
   QueueUpdateMessageBodyResult,
+  PurgeQueueResult,
   RedriveDlqResult,
   RedriveTarget,
   SendBatchFailure,
@@ -215,14 +217,18 @@ export {
   type PermissionCheck,
 } from "./modules/eam.js";
 export {
+  DEFAULT_UPLOAD_PART_SIZE,
   EuclidEag,
   PROTOCOL_HTTP,
   PROTOCOL_HTTPS,
   ROUTE_AUTH_BASIC,
   ROUTE_AUTH_EUCLID,
   ROUTE_AUTH_NONE,
+  ROUTE_PROXY,
+  ROUTE_UPLOAD,
   type CreateModuleRouteOptions,
   type CreateRouteOptions,
+  type CreateUploadRouteOptions,
   type UpdateRouteChanges,
 } from "./modules/eag.js";
 export {
@@ -293,7 +299,9 @@ export {
   INSTALLATION_MAX_MESSAGE_LENGTH,
   MAX_QUEUE_DELAY,
   type CreateQueueOptions,
+  type DeleteQueueOptions,
   type ListQueuesOptions,
+  type PurgeQueueOptions,
   type PurgeAllQueuesOptions,
   type ReceiveMessagesOptions,
   type SendMessageBatchEntry,
@@ -333,6 +341,7 @@ export {
   OBJECT_UPDATED,
   parseBucketEvent,
   type AttributeOptions,
+  type DeleteBucketOptions,
   type DownloadOptions,
   type ListBucketsOptions,
   type CountObjectsOptions,

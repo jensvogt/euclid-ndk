@@ -72,6 +72,17 @@ export interface BucketEvent {
   size: number;
   contentType: string;
   md5Sum: string;
+  /**
+   * The object's own user-defined attributes, carried on the notification rather than left to be fetched.
+   *
+   * That is the whole point of them: whatever put the object in the bucket knows things the bucket cannot
+   * express - which supplier it came from, how urgent it is - and a subscriber that has to read the object
+   * to find out has been told the wrong thing. Binary values are left out by the server, since a
+   * notification is metadata and nothing reading one wants a blob inlined into it.
+   */
+  attributes: Record<string, Variant>;
+  /** euclid's own envelope as it travelled with the object - a correlation id and its siblings. */
+  systemAttributes: Record<string, Variant>;
 }
 
 /** One user-defined attribute of an object, as the server stored it. */
@@ -305,6 +316,8 @@ export function toBucketEvent(document: unknown): BucketEvent {
     size: number(document, "size"),
     contentType: text(document, "contentType"),
     md5Sum: text(document, "md5Sum"),
+    attributes: toVariantMap(object(document)["attributes"]),
+    systemAttributes: toVariantMap(object(document)["systemAttributes"]),
   };
 }
 

@@ -14,11 +14,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 import {
+  DEFAULT_UPLOAD_PART_SIZE,
   Euclid,
   PROTOCOL_HTTPS,
   ROUTE_AUTH_BASIC,
   ROUTE_AUTH_EUCLID,
   ROUTE_AUTH_NONE,
+  ROUTE_PROXY,
+  ROUTE_UPLOAD,
   type EuclidEag,
   type EuclidSession,
 } from "../src/index.js";
@@ -269,6 +272,85 @@ describe("routes", () => {
 });
 
 // -- listeners --------------------------------------------------------------------------------------
+
+describe("upload routes", () => {
+  it("writes into a bucket instead of forwarding anywhere", async () => {
+    gateway.answer("eag", "create-route", {
+      ...ROUTE,
+      routeId: "inbox",
+      path: "/upload",
+      applicationId: "",
+      type: "UPLOAD",
+      upload: {
+        bucket: "ern:esm:bucket/inbox",
+        keyPrefix: "incoming/",
+        maxBytes: 104857600,
+        partSize: DEFAULT_UPLOAD_PART_SIZE,
+        contentTypes: ["text/csv"],
+      },
+    });
+
+    const route = await eag.createUploadRoute("inbox", "/upload", "ern:esm:bucket/inbox", {
+      keyPrefix: "incoming/",
+      maxBytes: 104857600,
+      contentTypes: ["text/csv"],
+      authentication: ROUTE_AUTH_EUCLID,
+    });
+
+    // No applicationId and no moduleTarget: an upload route is the endpoint rather than a way to one,
+    // and the server refuses one that names a backend.
+    assert.deepEqual(gateway.last().json(), {
+      routeId: "inbox",
+      path: "/upload",
+      type: "UPLOAD",
+      bucket: "ern:esm:bucket/inbox",
+      methods: [],
+      authentication: "EUCLID",
+      active: true,
+      keyPrefix: "incoming/",
+      maxBytes: 104857600,
+      partSize: DEFAULT_UPLOAD_PART_SIZE,
+      contentTypes: ["text/csv"],
+    });
+
+    assert.equal(route.type, ROUTE_UPLOAD);
+    assert.equal(route.upload.bucket, "ern:esm:bucket/inbox");
+    assert.deepEqual([route.upload.keyPrefix, route.upload.contentTypes], ["incoming/", ["text/csv"]]);
+    assert.equal(route.upload.partSize, DEFAULT_UPLOAD_PART_SIZE);
+  });
+
+  it("reads a route with no type as a proxy, and no upload block as empty", async () => {
+    // What a gateway older than the type answers. A route that forwards is what every route was, so
+    // reading it as anything else would describe a behaviour it never had.
+    gateway.answer("eag", "get-route", ROUTE);
+
+    const route = await eag.getRoute("orders");
+
+    assert.equal(route.type, ROUTE_PROXY);
+    assert.deepEqual([route.upload.bucket, route.upload.maxBytes], ["", 0]);
+    assert.deepEqual(route.upload.contentTypes, []);
+  });
+
+  it("turns an existing route into an upload route", async () => {
+    gateway.answer("eag", "update-route", { ...ROUTE, type: "UPLOAD" });
+
+    await eag.updateRoute("inbox", {
+      type: ROUTE_UPLOAD,
+      bucket: "ern:esm:bucket/inbox",
+      maxBytes: 0,
+      contentTypes: [],
+    });
+
+    assert.deepEqual(gateway.last().json(), {
+      routeId: "inbox",
+      type: "UPLOAD",
+      bucket: "ern:esm:bucket/inbox",
+      // Zero is a value here - it accepts any size - so it has to be sendable.
+      maxBytes: 0,
+      contentTypes: [],
+    });
+  });
+});
 
 describe("listeners", () => {
   it("gathers a flat certificate back up", async () => {

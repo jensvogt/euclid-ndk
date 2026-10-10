@@ -225,10 +225,32 @@ describe("buckets", () => {
     // A bucket goes with its objects, and a large one is emptied in the background first.
     gateway.answer("esm", "delete-bucket", { ern: BUCKET, async: true, jobId: "job-7", objects: 40000 }, 202);
 
+    // The bare boolean is the older form of this call, and still means background.
     const result = await esm.deleteBucket(BUCKET, true);
 
-    assert.deepEqual(gateway.last().json(), { ern: BUCKET, async: true });
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, async: true, ifEmpty: false });
     assert.deepEqual([result.count, result.background, result.jobId], [40000, true, "job-7"]);
+
+    await esm.deleteBucket(BUCKET, { background: true });
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, async: true, ifEmpty: false });
+  });
+
+  it("refuses to delete a bucket that still holds something, when asked to", async () => {
+    gateway.answer("esm", "delete-bucket", { ern: BUCKET, deleted: true, count: 0 });
+
+    await esm.deleteBucket(BUCKET, { ifEmpty: true });
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, async: false, ifEmpty: true });
+
+    // The refusal is the server's, and it names the count rather than just saying no.
+    gateway.answer("esm", "delete-bucket", { error: "Bucket is not empty: 3 object(s) remain." }, 409);
+    await assert.rejects(
+      () => esm.deleteBucket(BUCKET, { ifEmpty: true }),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["delete-bucket", 409]);
+        assert.match(error.reason, /3 object\(s\) remain/);
+        return true;
+      },
+    );
   });
 
   it("aborts an upload and says what was discarded", async () => {
@@ -485,6 +507,27 @@ describe("subscriptions", () => {
 
     assert.deepEqual([event.eventType, event.key, event.size], ["esm.object.created", "q3.pdf", 8]);
     assert.deepEqual(parseBucketEvent(Buffer.from(body, "utf8")), event);
+    // A notification that carried none reads as none rather than throwing.
+    assert.deepEqual([event.attributes, event.systemAttributes], [{}, {}]);
+  });
+
+  it("carries the object's own attributes on the notification", async () => {
+    // The whole point of them: whatever put the object there knows things the bucket cannot express,
+    // and a subscriber that has to read the object to find out has been told the wrong thing.
+    const event = parseBucketEvent(
+      JSON.stringify({
+        eventType: "esm.object.created",
+        bucketErn: BUCKET,
+        key: "incoming/onix.xml",
+        size: 2048,
+        attributes: { supplier: { type: "string", value: "acme" }, retries: { type: "long", value: 2 } },
+        systemAttributes: { correlationId: { type: "string", value: "c-4711" } },
+      }),
+    );
+
+    assert.deepEqual(event.attributes["supplier"], { type: "string", value: "acme" });
+    assert.deepEqual(event.attributes["retries"], { type: "long", value: 2 });
+    assert.deepEqual(event.systemAttributes["correlationId"], { type: "string", value: "c-4711" });
   });
 });
 

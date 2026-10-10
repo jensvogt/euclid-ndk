@@ -487,6 +487,42 @@ describe("messages", () => {
     assert.deepEqual(gateway.last().json(), { messageId: "message-1", visibility: 120 });
   });
 
+  it("deletes a queue, or refuses to while anything is still using it", async () => {
+    gateway.answer("eqs", "delete-queue", {});
+
+    await eqs.deleteQueue(QUEUE);
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, ifEmpty: false });
+
+    await eqs.deleteQueue(QUEUE, { ifEmpty: true });
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, ifEmpty: true });
+
+    // Events still on their way into the queue count as well: one is about to become a message, and
+    // a delete discards it.
+    gateway.answer("eqs", "delete-queue", { error: "Queue is not empty: 2 event(s) are still being delivered into it." }, 409);
+    await assert.rejects(
+      () => eqs.deleteQueue(QUEUE, { ifEmpty: true }),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["delete-queue", 409]);
+        return true;
+      },
+    );
+  });
+
+  it("purges a queue inline or in the background", async () => {
+    gateway.answer("eqs", "purge-queue", { ern: QUEUE, async: false });
+
+    const inline = await eqs.purgeQueue(QUEUE);
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, async: false });
+    assert.equal(inline.async, false);
+
+    // 202, and the count is what the queue held when the purge was accepted - the only figure there
+    // is to give, since the purge is still running when this is read.
+    gateway.answer("eqs", "purge-queue", { ern: QUEUE, async: true, messages: 41000 }, 202);
+    const background = await eqs.purgeQueue(QUEUE, { background: true });
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, async: true });
+    assert.deepEqual([background.async, background.messages], [true, 41000]);
+  });
+
   it("replaces a message body and says what it replaced", async () => {
     gateway.answer("eqs", "update-message-body", {
       messageId: "message-1",
