@@ -666,7 +666,7 @@ while `scan` reads the table, which is right for an export and wrong for a looku
 | Method | Action |
 | --- | --- |
 | `createApplication`, `updateApplication`, `copyApplication`, `redeployApplication`, `deleteApplication` | deploying |
-| `startApplication`, `stopApplication`, `restartApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
+| `startApplication`, `stopApplication`, `restartApplication`, `rebalanceApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
 | `applyInfrastructure` | making the installation match the application's own declaration |
 | `setLogLevel`, `resetLogLevel` | what one application logs, without restarting it |
 | `reportLoad` | an application telling euclid how busy it is, which is what the autoscaler acts on |

@@ -465,6 +465,39 @@ describe("running", () => {
     assert.equal(restarted.instances, 3);
   });
 
+  it("asks for a rebalance rather than waiting for one", async () => {
+    // The manager moves one instance per pass, so what comes back says the request was recorded and how
+    // big the pool is - not where anything ended up.
+    gateway.answer("eap", "rebalance-application", {
+      applicationId: "order-service",
+      rebalancing: true,
+      instances: 4,
+    });
+
+    const rebalanced = await eap.rebalanceApplication("order-service");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
+    assert.deepEqual([rebalanced.applicationId, rebalanced.rebalancing, rebalanced.instances], ["order-service", true, 4]);
+  });
+
+  it("is refused when asked to rebalance a job", async () => {
+    // A job's instance is a run of it, and moving one would start that run again.
+    gateway.answer(
+      "eap",
+      "rebalance-application",
+      { error: "Refusing to rebalance 'nightly-import': it is a JOB, and moving a run would start it again" },
+      400,
+    );
+
+    await assert.rejects(
+      () => eap.rebalanceApplication("nightly-import"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["rebalance-application", 400]);
+        return true;
+      },
+    );
+  });
+
   it("names what applying a declaration created and what it removed", async () => {
     gateway.answer("eap", "apply-infrastructure", {
       applicationId: "order-service",
