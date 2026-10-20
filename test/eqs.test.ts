@@ -487,6 +487,30 @@ describe("messages", () => {
     assert.deepEqual(gateway.last().json(), { messageId: "message-1", visibility: 120 });
   });
 
+  it("replaces a body and reports the size it displaced", async () => {
+    // `previousSize` is the one thing a caller cannot go back and check: the body it replaced is
+    // gone by the time the answer arrives.
+    gateway.answer("eqs", "update-message-body", {
+      messageId: "message-1",
+      queueErn: "ern:eqs:queue:orders",
+      size: 25,
+      previousSize: 10,
+      contentType: "text/plain",
+    });
+
+    const updated = await eqs.updateMessageBody("message-1", "0123456789012345678901234");
+
+    assert.equal(gateway.last().action, "update-message-body");
+    assert.deepEqual(gateway.last().json(), {
+      messageId: "message-1",
+      body: "0123456789012345678901234",
+    });
+    assert.equal(updated.size, 25);
+    assert.equal(updated.previousSize, 10);
+    assert.equal(updated.queueErn, "ern:eqs:queue:orders");
+    assert.equal(updated.contentType, "text/plain");
+  });
+
   it("types attributes and keeps the server's own field names", async () => {
     // `name` on the way in, `key` on the way out: the server's asymmetry, reproduced rather than
     // papered over.
