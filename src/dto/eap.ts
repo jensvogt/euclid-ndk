@@ -8,7 +8,7 @@
  * in hand; ERNs are what euclid stores, and the server resolves the one into the other.
  */
 
-import { documents, flag, number, stringMap, strings, text } from "./json.js";
+import { documents, flag, number, object, stringMap, strings, text } from "./json.js";
 
 /**
  * One running instance of an application, and where it can be reached.
@@ -283,6 +283,93 @@ export interface LoadReport {
   active: number;
 }
 
+/**
+ * How often one application may call one outside site, all of its instances together.
+ *
+ * `requestsPerSecond` is the rate its bucket refills at and `burst` how many it holds, so a site left alone
+ * for a while can be called `burst` times at once before the rate applies. `concurrent` caps the requests
+ * in flight at one time, whatever the rate allows.
+ */
+export interface EgressLimits {
+  requestsPerSecond: number;
+  burst: number;
+  concurrent: number;
+}
+
+/**
+ * What asking for an egress permit came to. Both answers are HTTP 200: being told to wait is the action
+ * working, not failing.
+ *
+ * Granted, it carries the `permitId` to release and when the slot lapses on its own (`expiresAt`).
+ * Refused, it carries why - `"blocked"` (the site said to stay away), `"concurrency"` (every slot is held)
+ * or `"rate"` (the bucket is empty) - and how long to wait before asking again, `retryAfterMs`.
+ */
+export interface EgressPermit {
+  applicationId: string;
+  site: string;
+  granted: boolean;
+  /** What the application is held to for this site, as it stood when the permit was decided. */
+  limits: EgressLimits;
+  permitId: string;
+  expiresAt: string;
+  reason: string;
+  retryAfterMs: number;
+}
+
+/**
+ * A permit given back. `released` false means its lease had already run out - not an error: the slot is free
+ * either way, and a client releasing late has nothing to do about it.
+ */
+export interface EgressRelease {
+  applicationId: string;
+  site: string;
+  released: boolean;
+}
+
+/** A site's refusal, recorded: no instance of the application is granted a permit for it until `blockedUntil`. */
+export interface EgressThrottle {
+  applicationId: string;
+  site: string;
+  blockedUntil: string;
+}
+
+/**
+ * What one application is held to for one site after a limit was set or removed. After a removal these are
+ * the limits it falls back to - its own `"*"` entry, or the installation's default.
+ */
+export interface EgressLimitResult {
+  applicationId: string;
+  site: string;
+  limits: EgressLimits;
+}
+
+/**
+ * One application's standing with one site, as of the moment it was listed rather than its last write: a
+ * bucket nobody drew on for an hour reads full, and slots whose lease ran out read free.
+ *
+ * The `"*"` entry is an application's default for sites without a limit of their own and nothing else -
+ * nobody acquires a permit for it - so its `tokens`, `inFlight`, `blockedUntil` and `lastUsed` read zero and
+ * empty.
+ */
+export interface EgressSite {
+  applicationId: string;
+  site: string;
+  limits: EgressLimits;
+  /** Whether these limits were set for this site, rather than inherited from `"*"` or the default. */
+  limitsSet: boolean;
+  tokens: number;
+  inFlight: number;
+  /** Empty unless the site is blocked now. */
+  blockedUntil: string;
+  lastUsed: string;
+}
+
+/** Every egress site of the applications listed, and what an application with no limits of its own is held to. */
+export interface EgressSites {
+  defaultLimits: EgressLimits;
+  sites: EgressSite[];
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toEndpoint(document: unknown): Endpoint {
@@ -414,6 +501,71 @@ export function toLoadReport(document: unknown): LoadReport {
     utilisation: number(document, "utilisation"),
     backlog: number(document, "backlog"),
     active: number(document, "active"),
+  };
+}
+
+export function toEgressLimits(document: unknown): EgressLimits {
+  return {
+    requestsPerSecond: number(document, "requestsPerSecond"),
+    burst: number(document, "burst"),
+    concurrent: number(document, "concurrent"),
+  };
+}
+
+export function toEgressPermit(document: unknown): EgressPermit {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    granted: flag(document, "granted"),
+    limits: toEgressLimits(object(document)["limits"]),
+    permitId: text(document, "permitId"),
+    expiresAt: text(document, "expiresAt"),
+    reason: text(document, "reason"),
+    retryAfterMs: number(document, "retryAfterMs"),
+  };
+}
+
+export function toEgressRelease(document: unknown): EgressRelease {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    released: flag(document, "released"),
+  };
+}
+
+export function toEgressThrottle(document: unknown): EgressThrottle {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    blockedUntil: text(document, "blockedUntil"),
+  };
+}
+
+export function toEgressLimitResult(document: unknown): EgressLimitResult {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    limits: toEgressLimits(object(document)["limits"]),
+  };
+}
+
+export function toEgressSite(document: unknown): EgressSite {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    limits: toEgressLimits(object(document)["limits"]),
+    limitsSet: flag(document, "limitsSet"),
+    tokens: number(document, "tokens"),
+    inFlight: number(document, "inFlight"),
+    blockedUntil: text(document, "blockedUntil"),
+    lastUsed: text(document, "lastUsed"),
+  };
+}
+
+export function toEgressSites(document: unknown): EgressSites {
+  return {
+    defaultLimits: toEgressLimits(object(document)["defaultLimits"]),
+    sites: documents(document, "sites").map(toEgressSite),
   };
 }
 

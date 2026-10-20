@@ -20,6 +20,7 @@ import {
   load as loadCredentials,
   save as saveCredentials,
   updateNamespace as updateCachedNamespace,
+  updateToken as updateCachedToken,
 } from "../credentials.js";
 import {
   type Account,
@@ -634,6 +635,37 @@ export class EuclidSession {
     await this.call("delete-user", { userId });
   }
 
+  /**
+   * Gives a user a different user ID. Administrator only.
+   *
+   * Both ids are named outright, unlike {@link changePassword}: a rename that could mean the caller by
+   * saying nothing is one keystroke from renaming the wrong account. The user's grants and group
+   * memberships move with the name.
+   *
+   * Refused with HTTP 409 when the new id is taken, and when an application runs as this user anywhere in
+   * the installation - renamed underneath it, the application would keep running and be refused everything
+   * it calls. Point it at another user with {@link import("./eap.js").EuclidEap.updateApplication} first.
+   * Naming the id the user already has is a 400 rather than a success that changed nothing.
+   *
+   * A session already open as that user keeps working until its token expires, and then cannot be
+   * refreshed, because its subject no longer resolves.
+   */
+  async changeUserId(userId: string, newUserId: string): Promise<User> {
+    return toUser(((await this.call("change-userid", { userId, newUserId })) as { user?: unknown }).user);
+  }
+
+  /**
+   * Gives a user a different email address. Administrator only, because an address is a way in: login
+   * accepts it in place of the user id.
+   *
+   * There is no clearing one - an empty address is refused, as is something plainly not an address, the
+   * address the user already has (400), and one another user holds (409). Nothing else about the user
+   * changes, and the user id goes on working for login as it always did.
+   */
+  async changeEmail(userId: string, email: string): Promise<User> {
+    return toUser(((await this.call("change-email", { userId, email })) as { user?: unknown }).user);
+  }
+
   // -- passwords -------------------------------------------------------------------------------
   //
   // One server action ("change-password") behind two methods, because it does two things and which
@@ -678,6 +710,32 @@ export class EuclidSession {
       );
     }
     await this.call("change-password", { userId, newPassword });
+  }
+
+  // -- session lifetime ------------------------------------------------------------------------
+
+  /**
+   * Extends this session: the server answers with a fresh token, which this session presents from here
+   * on - and which `~/.euclid/credentials` is brought up to date with, when it holds this user's login on
+   * this server.
+   *
+   * Not a way back in. The request authenticates like any other, so it has to be made *before* the token
+   * expires; an expired one is refused here as everywhere else, and only {@link EuclidEam.login} gets a
+   * session back from that. A process that stays up for longer than a session lasts calls this on a timer
+   * well inside the hour.
+   *
+   * The access key is the one the session already had - the server reuses rather than reissues it - so a
+   * session that signs its requests carries on unchanged. With a {@link tokenProvider} set, the provider's
+   * token is still the one presented; this only replaces {@link token}.
+   *
+   * Answers with this session, as {@link changeNamespace} does.
+   */
+  async refreshSession(): Promise<this> {
+    const token = toLoginResult(await this.call("refresh-session")).token;
+    if (!token) return this;
+    this.token = token;
+    if (this.#cache) await updateCachedToken(this.baseUrl, this.userId, token);
+    return this;
   }
 
   // -- namespace scoping -----------------------------------------------------------------------
