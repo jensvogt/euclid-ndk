@@ -123,13 +123,6 @@ export class EuclidEmo extends ModuleClient {
     return new MeterRegistry(this, module, options);
   }
 
-  /**
-   * EMO's own metrics, as the server collects them. Answered unparsed - the shape belongs to the monitoring
-   * module rather than to a caller of it.
-   */
-  async metrics(): Promise<Record<string, unknown>> {
-    return this.call("get-metrics");
-  }
 }
 
 // -- meters ------------------------------------------------------------------------------------------

@@ -198,6 +198,19 @@ export interface RedriveDlqResult {
 }
 
 /**
+ * What a purge took on.
+ *
+ * `async` says which kind it was, and `messages` is what the queue held when the purge was *accepted* -
+ * the only count there is to give, since an inline purge finishes at zero and a background one is still
+ * running when this is read.
+ */
+export interface PurgeQueueResult {
+  ern: string;
+  async: boolean;
+  messages: number;
+}
+
+/**
  * One message a batch would not send, and why.
  *
  * `index` is where the message sat in the list you sent. The server minted nothing for a message it did not
@@ -354,6 +367,14 @@ export function toQueueStatusResult(document: unknown): QueueStatusResult {
 
 export function toRedriveTarget(document: unknown): RedriveTarget {
   return { queueErn: text(document, "queueErn"), messages: number(document, "messages") };
+}
+
+export function toPurgeQueueResult(document: unknown): PurgeQueueResult {
+  return {
+    ern: text(document, "ern"),
+    async: flag(document, "async"),
+    messages: number(document, "messages"),
+  };
 }
 
 export function toSendBatchFailure(document: unknown): SendBatchFailure {

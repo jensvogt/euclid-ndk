@@ -487,28 +487,75 @@ describe("messages", () => {
     assert.deepEqual(gateway.last().json(), { messageId: "message-1", visibility: 120 });
   });
 
-  it("replaces a body and reports the size it displaced", async () => {
-    // `previousSize` is the one thing a caller cannot go back and check: the body it replaced is
-    // gone by the time the answer arrives.
+  it("deletes a queue, or refuses to while anything is still using it", async () => {
+    gateway.answer("eqs", "delete-queue", {});
+
+    await eqs.deleteQueue(QUEUE);
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, ifEmpty: false });
+
+    await eqs.deleteQueue(QUEUE, { ifEmpty: true });
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, ifEmpty: true });
+
+    // Events still on their way into the queue count as well: one is about to become a message, and
+    // a delete discards it.
+    gateway.answer("eqs", "delete-queue", { error: "Queue is not empty: 2 event(s) are still being delivered into it." }, 409);
+    await assert.rejects(
+      () => eqs.deleteQueue(QUEUE, { ifEmpty: true }),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["delete-queue", 409]);
+        return true;
+      },
+    );
+  });
+
+  it("purges a queue inline or in the background", async () => {
+    gateway.answer("eqs", "purge-queue", { ern: QUEUE, async: false });
+
+    const inline = await eqs.purgeQueue(QUEUE);
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, async: false });
+    assert.equal(inline.async, false);
+
+    // 202, and the count is what the queue held when the purge was accepted - the only figure there
+    // is to give, since the purge is still running when this is read.
+    gateway.answer("eqs", "purge-queue", { ern: QUEUE, async: true, messages: 41000 }, 202);
+    const background = await eqs.purgeQueue(QUEUE, { background: true });
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, async: true });
+    assert.deepEqual([background.async, background.messages], [true, 41000]);
+  });
+
+  it("replaces a message body and says what it replaced", async () => {
     gateway.answer("eqs", "update-message-body", {
       messageId: "message-1",
-      queueErn: "ern:eqs:queue:orders",
-      size: 25,
-      previousSize: 10,
-      contentType: "text/plain",
+      queueErn: QUEUE,
+      size: 42,
+      previousSize: 13,
+      contentType: "application/json",
     });
 
-    const updated = await eqs.updateMessageBody("message-1", "0123456789012345678901234");
+    const updated = await eqs.updateMessageBody("message-1", '{"order":"4711","retry":true}');
 
-    assert.equal(gateway.last().action, "update-message-body");
     assert.deepEqual(gateway.last().json(), {
       messageId: "message-1",
-      body: "0123456789012345678901234",
+      body: '{"order":"4711","retry":true}',
     });
-    assert.equal(updated.size, 25);
-    assert.equal(updated.previousSize, 10);
-    assert.equal(updated.queueErn, "ern:eqs:queue:orders");
-    assert.equal(updated.contentType, "text/plain");
+    // The size it was is the one thing a caller cannot go back and look up: the body it replaced is
+    // gone by the time this answer arrives.
+    assert.deepEqual([updated.size, updated.previousSize], [42, 13]);
+    assert.equal(updated.contentType, "application/json");
+  });
+
+  it("leaves a body over the queue's limit to the server to refuse", async () => {
+    // The limit is the queue's, so it is the queue that knows it - and sending something short and
+    // then growing it must not be a way around what sendMessage would have refused.
+    gateway.answer("eqs", "update-message-body", { error: "message is 2048 bytes, and this queue accepts 1024" }, 400);
+
+    await assert.rejects(
+      () => eqs.updateMessageBody("message-1", "x".repeat(2048)),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["update-message-body", 400]);
+        return true;
+      },
+    );
   });
 
   it("types attributes and keeps the server's own field names", async () => {

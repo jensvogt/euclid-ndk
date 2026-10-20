@@ -2,10 +2,11 @@
 
 Node.js client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
-Eleven modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
-EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets), EAG (the
-API gateway), ETS (FTP and SFTP servers) and EMO (monitoring) are reached from the session it hands back.
-EES is the one module still to come, and speaks the same protocol over the same client.
+Twelve modules so far. EAM - euclid's access management module - is where a login comes from; ESM
+(storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets),
+EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring) and EMM (the module manager itself) are
+reached from the session it hands back. EES is the one module still to come, and speaks the same protocol
+over the same client.
 
 Requires Node 20 or newer, and **has no dependencies**. Installing this SDK does not bring a TLS
 stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and the
@@ -68,7 +69,8 @@ const { total, items } = await session.listAccounts({ pageSize: 5 });
 ```
 
 The other modules hang off that session - `session.esm()`, `session.eqs()`, `session.ens()`,
-`session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()`, `session.emo()` - and each answers
+`session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()`, `session.emo()`,
+`session.emm()` - and each answers
 with the same client every time, so asking for one inside a loop costs one connection rather than one
 per iteration:
 
@@ -277,6 +279,14 @@ calls scopes the second one.
 Buckets and objects are named by ERN, not by name - `createBucket` answers with the one everything
 else takes, and `getBucketErn` is how an existing bucket's is looked up.
 
+`deleteBucket` takes `{ ifEmpty: true }` for "remove it only if nothing is using it" - what an automated
+caller means, as against an operator who has decided the contents go too. A bucket holding anything is then
+refused with 409 naming the count, directory markers included, since a marker is an object somebody's
+transfer client can see. `{ background: true }` is the other half, for a bucket large enough that emptying
+it outlasts the request; the two are never combined, because `ifEmpty` has already established there is
+nothing to empty. EQS's `deleteQueue({ ifEmpty: true })` is the same idea, and counts events still on their
+way into the queue as well - one is about to become a message, and a delete discards it.
+
 `existsBucket` is one of a family - ESM, EQS, ENS, EKM, EKV and ESS each have one, for buckets, queues,
 topics, keys, tables and secrets. All six answer three ways rather than two. `true` and `false` are the
 expected pair; the third is a thrown `EuclidServiceError`, and it is the one that matters. Only HTTP 404 -
@@ -350,6 +360,13 @@ await esm.subscribe(bucket.ern, QUEUE, queueErn, { eventTypes: [OBJECT_CREATED],
 const event = parseBucketEvent(message.body);
 ```
 
+The event carries the object's own **attributes** as well as its key and size, which is the whole point of
+having put them on the object: whatever uploaded it knows things the bucket cannot express - which supplier
+it came from, how urgent it is - and a subscriber that has to read the object to find that out has been told
+the wrong thing. `event.attributes` and `event.systemAttributes` are typed variant maps, empty when the
+notification carried none. Binary values are left out by the server, since a notification is metadata and
+nothing reading one wants a blob inlined into it.
+
 `unsubscribe` takes the subscription's own ERN - not the bucket's, and not the target's. Subscribing
 is not idempotent: a second call delivers every matching event twice, so a caller that may run twice
 checks `listSubscriptions` first.
@@ -383,12 +400,13 @@ sends it either way, because there an empty value is the instruction.
 | Method | Action |
 | --- | --- |
 | `createQueue`, `listQueues`, `getQueueErn`, `existsQueue`, `getQueueMetadata`, `purgeQueue`, `purgeAllQueues`, `deleteQueue` | queues |
+| `deleteQueue({ ifEmpty })`, `purgeQueue({ background })` | removing one only if nothing is using it; emptying a backlog without waiting |
 | `addQueueTag`, `setQueueTag`, `deleteQueueTag` | queue tags |
 | `stopQueue`, `startQueue`, `setQueueVisibility` | what a queue hands out, and for how long |
 | `setQueueDelay`, `setQueueMaxMessageLength` | how long a send is held back, and how large it may be |
 | `sendMessage`, `sendMessageBatch`, `receiveMessages`, `receiveAllMessages`, `deleteMessage`, `deleteMessageById` | messages |
 | `listMessages`, `getMessageCount`, `getMessageMetadata` | inspecting a queue without consuming it |
-| `getMessageAttribute`, `setMessageAttribute`, `setMessageVisibility` | one message at a time |
+| `getMessageAttribute`, `setMessageAttribute`, `setMessageVisibility`, `updateMessageBody` | one message at a time |
 | `redriveDlq` | moving a dead letter queue's messages back where they came from |
 | `asInternal`, `metrics` | euclid's own traffic, and EQS's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
@@ -469,9 +487,20 @@ instrumentation says so rather than leaving the server to guess from a rate.
 | `resendMessages` | handing what the topic still holds to its subscribers again |
 | `setTopicRetention`, `setTopicMaxMessageLength` | how long a published message is kept, and how large it may be |
 | `publishMessage`, `listMessages`, `getMessageCount` | messages |
-| `getMessageAttribute`, `setMessageAttribute` | one published message at a time |
+| `getMessageAttribute`, `setMessageAttribute`, `updateMessageBody` | one published message at a time |
 | `subscribe`, `listSubscriptions`, `unsubscribe` | delivery onward to a queue |
 | `metrics` | ENS's own metrics |
+
+`updateMessageBody` replaces a stored body - the whole of it, since a body is opaque to euclid and
+there is nothing that could merge two. Both modules answer with `previousSize` alongside the new one,
+because the body it replaced is gone by the time the answer arrives. The queue's or topic's maximum
+message length applies exactly as it does to a send or a publish, so sending something short and then
+growing it is not a way around a limit.
+
+On a topic it corrects **the record rather than the delivery**: a publish fans a message out to its
+subscribers immediately, so the copies that already left are past changing. What this reaches is the
+copy ENS still holds - what `listMessages` and `getMessage` answer with, and what `resendMessages`
+would send.
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
 What a topic does with a message is the whole difference from a queue: a queue holds one until a
@@ -640,6 +669,8 @@ while `scan` reads the table, which is right for an export and wrong for a looku
 | `startApplication`, `stopApplication`, `restartApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
 | `applyInfrastructure` | making the installation match the application's own declaration |
 | `setLogLevel`, `resetLogLevel` | what one application logs, without restarting it |
+| `reportLoad` | an application telling euclid how busy it is, which is what the autoscaler acts on |
+| `listNodes`, `getNode`, `drainNode`, `resumeNode`, `deleteNode` | the worker nodes applications are placed on |
 | `metrics` | EAP's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
@@ -663,10 +694,28 @@ is what every application deployed before the versioned runtimes existed says; `
 for 25 does not start on 21, and leaving it to whichever java resolved first made the version an accident of
 the manager's `PATH` - so a versioned runtime is the one to name when the artifact needs one.
 
-The deployment says which buckets and queues the application may reach, and euclid grants those to the
-identity it runs as: a technical principal it creates unless one is named, with no password, no login and
-one access key, so that nothing an application leaks is a person's credential. Those names are resolved in
-the session's namespace, so a deployment cannot grant itself another namespace's bucket by naming it.
+The deployment says which buckets, queues, topics and secrets the application may reach, and euclid grants
+those to the identity it runs as: a technical principal it creates unless one is named, with no password, no
+login and one access key, so that nothing an application leaks is a person's credential. Those names are
+resolved in the session's namespace, so a deployment cannot grant itself another namespace's bucket by
+naming it.
+
+A deployment naming none of the four says nothing about what it needs, and euclid reads that the only way it
+safely can: the application role with `resources: ["*"]` - every resource in the namespace. Naming the lists
+is how an application is held to what it actually uses.
+
+**On an update, the four go together.** The server rebuilds the whole resource list from whatever the request
+carries, so naming `buckets` and `queues` on an application that also holds topics or secrets **revokes those**.
+Pass every list the application should end up with, or none of them:
+
+```ts
+await eap.updateApplication("order-service", {
+  buckets: ["artifacts"],
+  queues: ["orders"],
+  topics: ["order-events"],   // leaving these two out would revoke them
+  secrets: ["db-password"],
+});
+```
 
 An application ID is unique within an account and namespace, not across the installation - so `namespace` is
 the other half of what identifies one, and `runtimeName` is what everything on the host is actually called:
@@ -686,10 +735,97 @@ differing is an application starting up, and the two differing for long is one t
 `updateApplication` sends only the fields it is given, because that is the distinction the server draws,
 as in ESS and EAG below:
 leaving `command` out keeps the stored command, while passing `""` clears it and hands the artifact back
-to the runtime's own interpreter. `buckets` and `queues` are re-resolved together whenever either is
-named - so pass both or neither, since naming one revokes what the other granted. For a new build of the
+to the runtime's own interpreter. `buckets`, `queues`, `topics` and `secrets` are re-resolved together
+whenever any one of them is named - so pass all four or none, since naming one revokes what the others
+granted. For a new build of the
 same application, `redeployApplication` is the call; one that would change neither the version nor the
 checksum is refused, which usually means the new artifact never reached the bucket.
+
+### Jobs and schedules
+
+An application is a `PROCESS` or a `JOB`, and the difference is what finishing means:
+
+```ts
+import { TYPE_JOB } from "euclid-ndk";
+
+await eap.createApplication("nightly-import", RUNTIME_JAVA, "artifacts", "import-1.0.0.jar", {
+  type: TYPE_JOB,
+  schedule: "0 2 * * *",   // UTC; "@daily" works too
+});
+```
+
+A `PROCESS` is started and kept up: an exit is a fault, the slot is filled again, and the pool is held at
+its instance count. That is what everything euclid ran before this field existed is, and what an
+application with no type stored still reads as - including against a euclid too old to report one.
+
+A `JOB` runs to completion. Exit 0 is success rather than a crash to back off from, the slot is not
+refilled, and the autoscaler leaves it alone, since a backlog says nothing about how many copies of a
+one-shot task to run. A nightly import deployed as a `PROCESS` is restarted forever, every completed run
+recorded as a crash - which is the mistake the type exists to make impossible to express.
+
+A `schedule` is only valid on a `JOB`, and the server refuses one on a `PROCESS` rather than storing a cron
+expression that will never fire. An expression that does not parse is refused at the moment it is set, not
+hours later when it was due. `Application.nextRunAt` is when it fires next, computed server-side when the
+schedule was set - and **empty when there is no schedule**, rather than the epoch, which would read as a job
+fifty years overdue. An empty `schedule` unschedules, putting a job back to running on demand.
+
+Changing a job back into a process has to clear the schedule in the same `updateApplication` call: the
+server checks the pair once both have been applied, so this is refused rather than left as a schedule that
+silently stopped firing.
+
+```ts
+await eap.updateApplication("nightly-import", { type: TYPE_PROCESS, schedule: "" });
+```
+
+### Worker nodes
+
+An application runs on the manager's own host unless it asks for somewhere else. `nodeLabels` is that ask -
+`{ os: "windows" }`, `{ gpu: "true" }` - matched against the labels a worker node registered with. An empty
+set, which is the default, hands the application back to the manager.
+
+Nodes register themselves and renew a lease; nothing here configures one. What an operator does is read the
+fleet, empty a host, and forget it once it is gone:
+
+```ts
+const nodes = await eap.listNodes();          // live or not: a node that stopped renewing reads live: false
+const node = await eap.getNode("worker-01");  // and what it is holding slots for
+```
+
+`getNode` is the only one that answers `applications`, each entry saying how many slots this node holds and
+how many are actually serving out of them - a node holding four and running none is the state worth seeing.
+Working that out means walking every pool, which is why a listing does not.
+
+`drainNode` stops new instances being placed on a node and lets the ones it has leave as they are replaced.
+It is **not** a stop: the node keeps running what it has and keeps renewing, because a node that downed
+tools on being drained would make draining an outage. Taking a host out of service is `drainNode`, then
+stopping the worker, then `deleteNode` - in that order. `deleteNode` alone does not stop anything; a worker
+still running re-registers on its next renewal.
+
+Every node action is open to any authenticated caller except `deleteNode`, which needs an administrator:
+a node's name is bound to the principal that registered it, and freeing the name is what would let another
+principal claim it along with its assignments and its applications' credentials.
+
+### Reporting load
+
+An application tells euclid how busy it is, and the autoscaler acts on that:
+
+```ts
+await eap.reportLoad(process.env.EUCLID_INSTANCE_ID, 72, { backlog: 120, active: 3 });
+```
+
+The instance id is the one euclid handed the process in `EUCLID_INSTANCE_ID`. A report that cannot say which
+slot of which pool it came from is refused rather than attributed to the wrong one. An application running as
+its own `app-<runtimeName>` principal already says which pool it is; one deployed with a *named* user passes
+`applicationId` as well, and has to be the identity that application runs as.
+
+`active` - work started and not finished - is not a load signal. It says "do not stop me", not "start
+another one": scale-down passes over an instance reporting any, because work in flight is work a second
+instance cannot take over. The call answers with what the server stored, so a client reporting 150 learns
+that euclid recorded 100.
+
+This is not a metric. Push the same numbers to `session.emo().pushMetrics` as well if you want the history -
+that path aggregates into five-minute buckets, which is right for a graph and five minutes too slow for a
+control loop.
 
 ### Infrastructure declarations
 
@@ -764,7 +900,7 @@ secret is moved off a key that is being retired.
 
 | Method | Action |
 | --- | --- |
-| `createRoute`, `createModuleRoute`, `updateRoute`, `getRoute`, `listRoutes`, `deleteRoute` | published paths |
+| `createRoute`, `createModuleRoute`, `createUploadRoute`, `updateRoute`, `getRoute`, `listRoutes`, `deleteRoute` | published paths |
 | `setRouteActive` | taking one out of service, and putting it back |
 | `listListeners` | the ports the gateway answers on, and whether it is answering |
 | `metrics` | EAG's own metrics |
@@ -793,6 +929,36 @@ application and to euclid's own gateway for its credentials: two ports, two orig
 empty namespace as *the empty namespace* rather than as "unspecified" - sending one would scope the route
 to nothing. `setRouteActive` is how something stops being exposed in a hurry: the route stays exactly as it
 was and comes back the same, which deleting and recreating it would not guarantee.
+
+### Upload routes
+
+A route with no backend: the gateway is the endpoint, and what it does with the body is write it into a
+bucket.
+
+```ts
+await eag.createUploadRoute("inbox", "/upload", bucketErn, {
+  keyPrefix: "incoming/",             // prefixed to the key, which is otherwise the path below the route
+  maxBytes: 100 * 1024 * 1024,        // 0, the default, accepts any size
+  contentTypes: ["text/csv"],         // empty, the default, accepts any type
+  authentication: ROUTE_AUTH_EUCLID,
+});
+```
+
+The difference from a proxy route is not which backend but **who reads the body**: a proxied request is
+buffered whole and handed on, while an upload is streamed into ESM in parts and never held in memory. That
+is why it is a type on the route rather than another field on the one behaviour - the two cannot share a
+request path - and why an upload route naming an application or a module is refused: naming one says the
+author expected the request to be forwarded, and it will not be.
+
+`maxBytes` and `contentTypes` are both answered *before* a byte of the body is read, which is the point of
+matching the route first: a caller sending something this route will not take is told so now - 413 or 415 -
+rather than after spending however long it takes to send it. A `Content-Length` over the limit is refused on
+the header, and a body that turns out longer than it claimed is cut off at the same limit, because the
+header is a claim and the limit is what holds when the claim was a lie.
+
+Keys are checked rather than trusted: an empty path segment, a `.` or `..` segment, or a null byte is
+refused, so a caller cannot climb out of the prefix it was given. A route stored before the type existed
+reads as `ROUTE_PROXY`, which is what it is.
 
 `listListeners` answers with a page of listeners plus `serving`, which says whether the gateway's ports are
 bound at all. A listener whose port was taken, or whose certificate could not be loaded, is still listed -
@@ -851,7 +1017,6 @@ under a client mid-session.
 | `pushMetrics` | adding an application's own measurements to the installation's |
 | `registry` | meters that accumulate in the process and publish on a step |
 | `listMetrics`, `average` | reading the rows back (administrator-only) |
-| `metrics` | EMO's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
 euclid's own modules push their samples here rather than being polled, because a module the autoscaler is
@@ -921,6 +1086,104 @@ const mean = await emo.average({ name: "invoice.parse.total" });
 A row's `value` is the mean for a gauge and the sum for a rate - `type` says which, in upper case, where a push
 spells it in lower - and `minValue`/`maxValue` survive a rollup, so an hourly row still knows the worst five
 minutes inside it.
+
+## What EMM covers
+
+`session.emm()` answers with the module manager. Every action is administrator-only server-side, and more
+plainly so than elsewhere: between them they expose every module's live process pool and every module's raw
+collections.
+
+| Method | Action |
+| --- | --- |
+| `listModules`, `findModule` | every module the manager runs, and the processes in each |
+| `setInstances`, `setThreads` | how many instances a pool may run, and how many threads each runs |
+| `setLogLevel`, `resetLogLevel` | what one module logs, without restarting it |
+| `stopModule`, `startModule`, `restartModule` | taking a module out of service, and cycling one |
+| `exportArchive`, `importArchive` | the module collections as documents, out of the database and back in |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+Two unrelated jobs live here, together because both are about the installation rather than anything stored
+in it: the module pools, and export/import.
+
+### The pools
+
+```ts
+const emm = session.emm();
+
+for (const module of await emm.listModules()) {
+  const running = module.instances.filter((instance) => instance.state === MODULE_RUNNING).length;
+  console.log(`${module.name}  ${running}/${module.instances.length} running`);
+}
+```
+
+This is the only view in euclid that shows a process: pids, hosts, ports, restart counts, and what each
+instance last reported about its own load. "Module" is wider here than the twelve this SDK has clients for -
+an application pool and a transfer server are modules to the manager too - which is what `module.core` says,
+and `listModules` is not scoped by namespace, since these are the installation's processes rather than
+anybody's resources. `findModule` filters that listing client-side, because EMM has no per-module read.
+
+**Nothing here acts immediately.** EMM runs in its own process while the pools live in the manager's, so
+every control action records what was asked for and the manager picks it up on its next reconcile, within a
+second or so. That is also why these survive a restart: they are written on the module document, and
+start-up applies them over `euclid.json`. Every result's `runningInstances` is therefore the pool *before*
+the manager has acted - a measure of what the change will cost rather than of what it has done.
+
+**-1 means "nothing was said", and is not zero.** `desiredMinInstances`, `desiredMaxInstances` and
+`desiredThreads` are the limits asked for and not yet reconciled, `-1` when nothing is pending - which is
+why a caller adjusting a limit twice in quick succession can see the second change for what it is. On an
+instance, `utilisation` and `backlog` are `-1` when it has never reported: a module that does not report, an
+SDK too old to know how, or a call being refused. A pool whose floor reads `0` has been asked to scale away
+when idle; one that reads `-1` has been asked nothing.
+
+`stopModule` and `startModule` are for core modules only - an application's desired state belongs to EAP and
+a transfer server's to ETS, and anything recorded here for them would be undone within seconds, so the
+server refuses it and says which call to use. `emm` cannot stop itself either: every other module can be
+brought back with the call this is, and that one could not. `restartModule` *is* allowed for applications and
+transfer servers, because it changes no desired state - the same instances come straight back, one per
+reconcile tick, so the module keeps serving out of the ones not yet reached. A module that is stopped is
+refused: there is nothing to restart, and honouring it would start what somebody asked to have stopped.
+
+`setThreads` is the one change that cannot be applied to a running process - a thread count is fixed when
+one starts - so the manager cycles the instances for it. `setLogLevel` needs no restart at all.
+
+### Export and import
+
+The module collections as documents: a backup, a copy of one installation into another, and the one way to
+look at what euclid stores without a database client. It is the same file `euclid-cli emm export` writes, and
+either tool reads the other's.
+
+```ts
+const archive = await emm.exportArchive({ modules: ["esm", "eqs"], full: true, passphrase });
+await writeFile("backup.json", JSON.stringify(archive));
+
+const result = await emm.importArchive(JSON.parse(await readFile("backup.json", "utf8")), { passphrase });
+for (const { collection, imported, failed } of result.imported) console.log(collection, imported, failed);
+```
+
+Exactly one of `all` and `modules` is required - "every module" and "these modules" are different enough
+requests that the server will not guess between them. `full` adds the bulk child data (EQS and ENS messages,
+ESM objects); without it an archive holds the resources and not their contents, which is usually what
+somebody inspecting an installation wants and always much smaller.
+
+**What an archive is worth.** It carries access-key secrets, and EKM's key material if `ekm` was asked for -
+base64-encoded, not encrypted, because a key store restored without its keys restores nothing. So `ekm`
+cannot be exported without a `passphrase`, and the server refuses it rather than writing one. A sealed
+archive holds nothing worth anything without the passphrase; the envelope around it stays readable - which
+modules, when, and how to derive the key - which is enough to tell what a file is and to ask for the right
+passphrase. What that protects is the file and not the action: anybody who may call this may call it again
+without a passphrase.
+
+A sealed export of named modules is **one request per module**, every frame sealed under one key, which is
+why the archive carries `frames` rather than a single payload - a file holding ten modules is then not also
+one response holding them. `exportArchive` does that loop and the salt-sharing itself; `all` stays a single
+request, since there is nothing to tie together.
+
+An import upserts each document by its `_id`, replacing the whole document rather than merging fields, so
+what lands matches the export exactly. A wrong passphrase and an altered file fail the same way and nothing
+is written when they do - the archive is authenticated as it is opened, so a half-imported archive is not a
+state this can leave behind. Read `result.skipped` rather than the absence of an error: a collection this
+installation does not recognise is reported rather than refused, so an import that wrote nothing at all
+still succeeds.
 
 ## Development
 

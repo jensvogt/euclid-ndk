@@ -128,6 +128,19 @@ export interface ListObjectsOptions extends ListOptions {
   includeDirectories?: boolean;
 }
 
+/**
+ * How a bucket is deleted. Both default to false, which is the plain "delete it and its objects".
+ *
+ * They are not combined: `ifEmpty` has already established there is nothing to empty, so it never runs in
+ * the background whatever `background` says.
+ */
+export interface DeleteBucketOptions {
+  /** Answer as soon as the work is written down, and empty the bucket behind it. */
+  background?: boolean;
+  /** Refuse with HTTP 409 rather than deleting, if the bucket holds anything at all. */
+  ifEmpty?: boolean;
+}
+
 /** What to narrow a count to. Naming neither counts the whole bucket, markers excluded. */
 export interface CountObjectsOptions {
   /** Only count objects whose key starts with this. Matched literally, not as a glob. */
@@ -263,9 +276,25 @@ export class EuclidEsm extends ModuleClient {
    *
    * Deleting inline answers with nothing, since the bucket is gone by then; the result is only worth
    * reading when `background` is true.
+   *
+   * `ifEmpty` is the other half of this call - "remove it only if nothing is using it", which is what an
+   * automated caller means and what an operator deciding the contents go too does not. A bucket holding
+   * anything is then refused with HTTP 409 naming the count, and nothing is deleted. Directory markers
+   * count, because a marker is an object somebody's transfer client can see. It never takes the background
+   * path: there is by definition nothing to empty, and a background job to remove no objects is a job that
+   * exists only to be waited on.
    */
-  async deleteBucket(ern: string, background = false): Promise<DeleteBucketResult> {
-    return toDeleteBucketResult(await this.call("delete-bucket", { ern, async: background }));
+  async deleteBucket(ern: string, options: DeleteBucketOptions | boolean = {}): Promise<DeleteBucketResult> {
+    // A bare boolean is the older form of this call, which took `background` positionally. Kept
+    // working rather than renamed, since what it meant has not changed.
+    const settings = typeof options === "boolean" ? { background: options } : options;
+    return toDeleteBucketResult(
+      await this.call("delete-bucket", {
+        ern,
+        async: settings.background ?? false,
+        ifEmpty: settings.ifEmpty ?? false,
+      }),
+    );
   }
 
   /**

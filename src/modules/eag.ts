@@ -15,6 +15,11 @@
  * reached in entirely different ways, and a route that named both would leave which one wins up to the
  * proxy.
  *
+ * An **upload** route is the exception, and the difference is not which backend but who reads the body: a
+ * proxied request is buffered whole and handed on, while an upload is streamed straight into ESM in parts
+ * and never held in memory. So it forwards to nothing and names a bucket instead of a backend - see
+ * {@link EuclidEag.createUploadRoute}.
+ *
  * Module routes are the way in for something outside euclid that needs euclid itself - a browser that has to
  * log in before it can call anything. Without one, a front end would talk to the API gateway for the
  * application and to euclid's own gateway for its credentials: two ports, two origins, and CORS between
@@ -48,6 +53,15 @@ export const ROUTE_AUTH_EUCLID = "EUCLID";
  */
 export const ROUTE_AUTH_BASIC = "BASIC";
 
+/**
+ * What the gateway does with a request a route matches.
+ *
+ * {@link ROUTE_PROXY} forwards it, which is what almost every route is and what a route with no type
+ * stored still is. {@link ROUTE_UPLOAD} terminates it here and writes the body into a bucket.
+ */
+export const ROUTE_PROXY = "PROXY";
+export const ROUTE_UPLOAD = "UPLOAD";
+
 /** What a listener speaks, as {@link import("../dto/eag.js").Listener} reports it. */
 export const PROTOCOL_HTTP = "http";
 export const PROTOCOL_HTTPS = "https";
@@ -79,6 +93,37 @@ export interface CreateRouteOptions {
   region?: string;
 }
 
+/** How much a part of a streamed upload is, unless the route says otherwise. */
+export const DEFAULT_UPLOAD_PART_SIZE = 5 * 1024 * 1024;
+
+/** What an upload route accepts, beyond the bucket it writes into. */
+export interface CreateUploadRouteOptions extends Omit<CreateRouteOptions, "applicationId" | "moduleTarget" | "moduleAction"> {
+  /**
+   * Prefixed to the key every upload is stored under, which is otherwise the path below the route. A
+   * trailing slash is added if it is missing and leading ones are dropped, so `"inbox"` and `"/inbox/"`
+   * name the same prefix.
+   */
+  keyPrefix?: string;
+  /**
+   * The largest body this route accepts, in bytes; zero - the default - accepts any size. A
+   * `Content-Length` over it is refused with 413 before a byte of the body is read, and a body that turns
+   * out to be longer than it claimed is cut off at the same limit: the header is a claim, and the limit is
+   * what holds when the claim was a lie.
+   */
+  maxBytes?: number;
+  /**
+   * How much of the body is buffered before each part goes to ESM. Defaults to
+   * {@link DEFAULT_UPLOAD_PART_SIZE}, and has to be greater than zero.
+   */
+  partSize?: number;
+  /**
+   * The content types this route accepts - `["image/png", "application/pdf"]`. Empty, the default, accepts
+   * any. Matched case-insensitively with parameters stripped, so `text/csv; charset=utf-8` matches
+   * `"text/csv"`, and anything else is refused with 415 before the body is read.
+   */
+  contentTypes?: readonly string[];
+}
+
 /** The same, minus the pair {@link EuclidEag.createModuleRoute} supplies itself. */
 export type CreateModuleRouteOptions = Omit<CreateRouteOptions, "applicationId" | "moduleTarget" | "moduleAction">;
 
@@ -98,6 +143,14 @@ export interface UpdateRouteChanges {
   methods?: Iterable<string>;
   authentication?: string;
   active?: boolean;
+  /** {@link ROUTE_PROXY} or {@link ROUTE_UPLOAD}. Turning a route into one clears what the other needed. */
+  type?: string;
+  /** The bucket an upload route writes into, by ERN. Only meaningful on an upload route. */
+  bucket?: string;
+  keyPrefix?: string;
+  maxBytes?: number;
+  partSize?: number;
+  contentTypes?: readonly string[];
   namespace?: string;
   region?: string;
 }
@@ -111,6 +164,12 @@ const UPDATABLE = [
   "methods",
   "authentication",
   "active",
+  "type",
+  "bucket",
+  "keyPrefix",
+  "maxBytes",
+  "partSize",
+  "contentTypes",
   "namespace",
   "region",
 ] as const satisfies readonly (keyof UpdateRouteChanges)[];
@@ -145,6 +204,8 @@ export class EuclidEag extends ModuleClient {
   async createRoute(routeId: string, path: string, options: CreateRouteOptions = {}): Promise<Route> {
     const applicationId = options.applicationId ?? "";
     const moduleTarget = options.moduleTarget ?? "";
+    // The server's rule for a proxy route, checked here to save the round trip. An upload route names
+    // neither of these - see createUploadRoute, which is why this is not simply always required.
     if (Boolean(applicationId) === Boolean(moduleTarget)) {
       throw new Error("name either an applicationId or a moduleTarget, not both and not neither");
     }
@@ -186,6 +247,53 @@ export class EuclidEag extends ModuleClient {
     options: CreateModuleRouteOptions = {},
   ): Promise<Route> {
     return this.createRoute(routeId, path, { ...options, moduleTarget, moduleAction });
+  }
+
+  /**
+   * Publishes a path that writes what it receives into a bucket, instead of forwarding it anywhere.
+   *
+   * The gateway is the endpoint here. A request's body is streamed into ESM in parts as it arrives and is
+   * never held whole in memory, which is what makes an upload a route *type* rather than another field on
+   * the proxy behaviour - the two cannot share a request path. So this names a bucket and no backend, and
+   * the server refuses an upload route that names an application or a module: naming one says the author
+   * expected the request to be forwarded, and it will not be.
+   *
+   * The key an upload lands under is the path below the route, with `keyPrefix` in front of it. Keys are
+   * checked rather than trusted - an empty path segment, a `.` or `..` segment, or a null byte is refused -
+   * so a caller cannot climb out of the prefix it was given.
+   *
+   * `maxBytes` and `contentTypes` are both answered *before* the body is read, which is the point of having
+   * matched the route first: a caller sending something this route will not take is told so now rather than
+   * after spending however long it takes to send it.
+   *
+   * @param routeId the route's own ID, unique within the account and namespace
+   * @param path the path prefix it publishes; it has to start with `/`
+   * @param bucketErn the bucket to write into, by ERN - it has to exist already, since a route to a bucket
+   *   that is not there accepts a whole upload before discovering it has nowhere to put it
+   * @param options the limits and the key prefix
+   */
+  async createUploadRoute(
+    routeId: string,
+    path: string,
+    bucketErn: string,
+    options: CreateUploadRouteOptions = {},
+  ): Promise<Route> {
+    const payload: Record<string, unknown> = {
+      routeId,
+      path,
+      type: ROUTE_UPLOAD,
+      bucket: bucketErn,
+      methods: [...(options.methods ?? [])],
+      authentication: options.authentication ?? ROUTE_AUTH_NONE,
+      active: options.active ?? true,
+      keyPrefix: options.keyPrefix ?? "",
+      maxBytes: options.maxBytes ?? 0,
+      partSize: options.partSize ?? DEFAULT_UPLOAD_PART_SIZE,
+      contentTypes: [...(options.contentTypes ?? [])],
+    };
+    if (options.namespace) payload["namespace"] = options.namespace;
+    if (options.region) payload["region"] = options.region;
+    return toRoute(await this.call("create-route", payload));
   }
 
   /**

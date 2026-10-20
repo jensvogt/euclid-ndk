@@ -33,6 +33,7 @@ import {
   toQueueMessageMetadata,
   toQueueMetadata,
   toQueueStatusResult,
+  toPurgeQueueResult,
   toQueueUpdateMessageBodyResult,
   toRedriveDlqResult,
   type CreateQueueResult,
@@ -44,6 +45,7 @@ import {
   type QueueMessageCount,
   type QueueMessageMetadata,
   type QueueMetadata,
+  type PurgeQueueResult,
   type QueueStatusResult,
   type QueueUpdateMessageBodyResult,
   type RedriveDlqResult,
@@ -152,6 +154,18 @@ export interface SendMessageBatchEntry {
   priority?: string;
 }
 
+/** How a queue is deleted. */
+export interface DeleteQueueOptions {
+  /** Refuse with HTTP 409 rather than deleting, if the queue holds messages or has events on the way in. */
+  ifEmpty?: boolean;
+}
+
+/** How a queue is purged. */
+export interface PurgeQueueOptions {
+  /** Answer as soon as the purge has started, and empty the queue behind it. */
+  background?: boolean;
+}
+
 /** What a message carries besides its body. */
 export interface SendMessageOptions {
   /** The sender's own attributes, which come back on the received message. */
@@ -222,9 +236,20 @@ export class EuclidEqs extends ModuleClient {
     );
   }
 
-  /** Deletes a queue and everything on it. */
-  async deleteQueue(ern: string): Promise<void> {
-    await this.call("delete-queue", { ern });
+  /**
+   * Deletes a queue and everything on it.
+   *
+   * `ifEmpty` makes it "remove it only if nothing is using it" - what an automated caller means, as
+   * against an operator who has decided the messages go too. A queue with messages on it is then refused
+   * with HTTP 409 naming the count, and nothing is deleted.
+   *
+   * Undelivered events count as well, and are the reason this is worth asking for rather than checking
+   * {@link getMessageCount} first: an event on its way into the queue is about to become a message, and a
+   * delete discards it. A count the server could not establish also refuses - the alternative is deleting
+   * a queue because the database did not answer a question about it.
+   */
+  async deleteQueue(ern: string, options: DeleteQueueOptions = {}): Promise<void> {
+    await this.call("delete-queue", { ern, ifEmpty: options.ifEmpty ?? false });
   }
 
   /**
@@ -300,9 +325,20 @@ export class EuclidEqs extends ModuleClient {
     return toQueueMetadata(await this.call("get-queue-metadata", { ern }));
   }
 
-  /** Deletes every message on a queue, leaving the queue itself in place. */
-  async purgeQueue(ern: string): Promise<void> {
-    await this.call("purge-queue", { ern });
+  /**
+   * Deletes every message on a queue, leaving the queue itself in place.
+   *
+   * `background` is what a queue with a real backlog wants: emptying one takes longer than the gateway
+   * will wait, so doing it inline hands the caller a timeout while the purge runs on regardless. The
+   * server answers 202 as soon as it has started, and the result's `messages` is what was there when the
+   * purge was *accepted* - the only count anybody can be given, since by the time it finishes the number
+   * is zero and by the time it is read something may have sent more.
+   *
+   * Nothing resumes a background purge: one interrupted halfway has removed part of the queue, and asking
+   * again removes the rest.
+   */
+  async purgeQueue(ern: string, options: PurgeQueueOptions = {}): Promise<PurgeQueueResult> {
+    return toPurgeQueueResult(await this.call("purge-queue", { ern, async: options.background ?? false }));
   }
 
   /**

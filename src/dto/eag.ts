@@ -8,7 +8,7 @@
  */
 
 import { type Page } from "./eam.js";
-import { documents, flag, number, strings, text } from "./json.js";
+import { documents, flag, number, object, strings, text } from "./json.js";
 
 /**
  * One published path: what the gateway answers for, and where it sends it.
@@ -17,6 +17,24 @@ import { documents, flag, number, strings, text } from "./json.js";
  * a non-empty `moduleTarget` is exactly what says this is a module route. An empty `methods` means every
  * method.
  */
+/**
+ * What an upload route does with a body, as the server stored it.
+ *
+ * Present on every route and empty on a proxy one, since the server reports the block either way.
+ */
+export interface RouteUpload {
+  /** The bucket uploads are written into, by ERN. */
+  bucket: string;
+  /** Prefixed to the key each upload lands under; empty writes at the root of the bucket. */
+  keyPrefix: string;
+  /** The largest body accepted, in bytes. Zero accepts any size. */
+  maxBytes: number;
+  /** How much of a body is buffered before each part goes to ESM. */
+  partSize: number;
+  /** The content types accepted; empty accepts any. */
+  contentTypes: string[];
+}
+
 export interface Route {
   routeId: string;
   ern: string;
@@ -33,6 +51,14 @@ export interface Route {
    * {@link import("../modules/eag.js")}.
    */
   authentication: string;
+  /**
+   * `PROXY` or `UPLOAD` - whether the gateway forwards what this route carries or writes it into a bucket.
+   * A route stored before the type existed reads as `PROXY`, which is what it is. See
+   * {@link import("../modules/eag.js").ROUTE_UPLOAD}.
+   */
+  type: string;
+  /** Where an upload route puts what it receives. Empty on a proxy route. */
+  upload: RouteUpload;
   /**
    * Whether the gateway is serving this path at all - see
    * {@link import("../modules/eag.js").EuclidEag.setRouteActive}.
@@ -99,6 +125,16 @@ export interface ListListenersResult extends Page<Listener> {
 
 // -- parsers ---------------------------------------------------------------------------------------
 
+export function toRouteUpload(document: unknown): RouteUpload {
+  return {
+    bucket: text(document, "bucket"),
+    keyPrefix: text(document, "keyPrefix"),
+    maxBytes: number(document, "maxBytes"),
+    partSize: number(document, "partSize"),
+    contentTypes: strings(document, "contentTypes"),
+  };
+}
+
 export function toRoute(document: unknown): Route {
   return {
     routeId: text(document, "routeId"),
@@ -112,6 +148,10 @@ export function toRoute(document: unknown): Route {
     moduleAction: text(document, "moduleAction"),
     methods: strings(document, "methods"),
     authentication: text(document, "authentication"),
+    // "PROXY" when absent, the server's own rule for a route stored before the type existed: it forwards,
+    // and reading it as anything else would describe a behaviour the gateway never had.
+    type: text(document, "type") || "PROXY",
+    upload: toRouteUpload(object(document)["upload"]),
     // Absent means serving, which is the server's default for a stored route.
     active: flag(document, "active", true),
     created: text(document, "created"),

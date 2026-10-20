@@ -12,9 +12,10 @@
  * session.close();
  * ```
  *
- * Eleven modules so far. EAM - euclid's access management module - is where a login comes from; ESM (storage),
- * EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets), EAG (the API
- * gateway), ETS (FTP and SFTP servers) and EMO (monitoring) are reached from the session it hands back:
+ * Twelve modules so far. EAM - euclid's access management module - is where a login comes from; ESM
+ * (storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets),
+ * EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring) and EMM (the module manager itself)
+ * are reached from the session it hands back:
  *
  * ```ts
  * const bucket = await session.esm().createBucket("reports");
@@ -90,8 +91,21 @@ export type {
   Listener,
   ListenerCertificate,
   Route,
+  RouteUpload,
 } from "./dto/eag.js";
-export type { Application, Endpoint, InfrastructureResult, LogLevelResult, RestartResult } from "./dto/eap.js";
+export type {
+  Application,
+  DeleteNodeResult,
+  DrainNodeResult,
+  Endpoint,
+  InfrastructureResult,
+  LoadReport,
+  LogLevelResult,
+  RestartResult,
+  WorkerNode,
+  WorkerNodeApplication,
+  WorkerNodeDetails,
+} from "./dto/eap.js";
 export {
   CREATED_ATTRIBUTE,
   MODIFIED_ATTRIBUTE,
@@ -109,6 +123,21 @@ export type {
   KeyDescriptionResult,
   RevokeKeyResult,
 } from "./dto/ekm.js";
+export type {
+  Archive,
+  ImportResult,
+  ImportedCollection,
+  InstanceLimitsResult,
+  Module,
+  ModuleInstance,
+  ModuleLogLevelResult,
+  ModuleStateResult,
+  ModuleThreadsResult,
+  PlainArchive,
+  RestartModuleResult,
+  SealedArchive,
+  SkippedCollection,
+} from "./dto/emm.js";
 export type {
   CreateTopicResult,
   ResendResult,
@@ -153,6 +182,7 @@ export type {
   QueueMetadata,
   QueueStatusResult,
   QueueUpdateMessageBodyResult,
+  PurgeQueueResult,
   RedriveDlqResult,
   RedriveTarget,
   SendBatchFailure,
@@ -203,14 +233,18 @@ export {
   type PermissionCheck,
 } from "./modules/eam.js";
 export {
+  DEFAULT_UPLOAD_PART_SIZE,
   EuclidEag,
   PROTOCOL_HTTP,
   PROTOCOL_HTTPS,
   ROUTE_AUTH_BASIC,
   ROUTE_AUTH_EUCLID,
   ROUTE_AUTH_NONE,
+  ROUTE_PROXY,
+  ROUTE_UPLOAD,
   type CreateModuleRouteOptions,
   type CreateRouteOptions,
+  type CreateUploadRouteOptions,
   type UpdateRouteChanges,
 } from "./modules/eag.js";
 export {
@@ -233,7 +267,10 @@ export {
   RUNTIME_PYTHON,
   STATE_RUNNING,
   STATE_STOPPED,
+  TYPE_JOB,
+  TYPE_PROCESS,
   type CreateApplicationOptions,
+  type ReportLoadOptions,
   type ScaleApplicationBounds,
   type UpdateApplicationChanges,
 } from "./modules/eap.js";
@@ -278,7 +315,9 @@ export {
   INSTALLATION_MAX_MESSAGE_LENGTH,
   MAX_QUEUE_DELAY,
   type CreateQueueOptions,
+  type DeleteQueueOptions,
   type ListQueuesOptions,
+  type PurgeQueueOptions,
   type PurgeAllQueuesOptions,
   type ReceiveMessagesOptions,
   type SendMessageBatchEntry,
@@ -289,6 +328,23 @@ export {
   type CreateSecretOptions,
   type UpdateSecretChanges,
 } from "./modules/ess.js";
+export {
+  EuclidEmm,
+  MAX_WORKER_THREADS,
+  MODULE_COMPLETED,
+  MODULE_CRASHED,
+  MODULE_PENDING_RESTART,
+  MODULE_RESTARTING,
+  MODULE_RUNNING,
+  MODULE_STARTING,
+  MODULE_STOPPED,
+  MODULE_STOPPING,
+  MODULE_UNKNOWN,
+  NOTHING_PENDING,
+  type ExportOptions,
+  type ImportOptions,
+  type InstanceLimits,
+} from "./modules/emm.js";
 export {
   Counter,
   DEFAULT_STEP_MS,
@@ -318,6 +374,7 @@ export {
   OBJECT_UPDATED,
   parseBucketEvent,
   type AttributeOptions,
+  type DeleteBucketOptions,
   type DownloadOptions,
   type ListBucketsOptions,
   type CountObjectsOptions,
@@ -328,7 +385,7 @@ export {
 } from "./modules/esm.js";
 
 /** The version this package was published as. */
-export const VERSION = "0.15.0";
+export const VERSION = "0.18.0";
 
 /** Options {@link Euclid.login} passes through to the builder, for the case that needs no builder. */
 export interface LoginOptions {
