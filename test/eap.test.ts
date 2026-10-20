@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 import {
+  EGRESS_ALL_SITES,
+  EGRESS_RATE,
   Euclid,
   LOG_DEBUG,
   RUNTIME_JAVA,
@@ -693,6 +695,135 @@ describe("reporting load", () => {
 
     assert.equal(gateway.last().json()["utilisation"], 150);
     assert.equal(report.utilisation, 100);
+  });
+});
+
+describe("egress", () => {
+  const LIMITS = { requestsPerSecond: 2.5, burst: 5, concurrent: 3 };
+
+  it("asks for a permit, and leaves the lease to the server unless one is given", async () => {
+    gateway.answer("eap", "acquire-egress-permit", {
+      applicationId: "downloader",
+      site: "downloads.example.com",
+      granted: true,
+      limits: LIMITS,
+      permitId: "p-1",
+      expiresAt: "2026-10-20T10:15:00Z",
+    });
+
+    const permit = await eap.acquireEgressPermit("downloader", "downloads.example.com");
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "downloads.example.com" });
+    assert.deepEqual([permit.granted, permit.permitId, permit.expiresAt], [true, "p-1", "2026-10-20T10:15:00Z"]);
+    assert.deepEqual(permit.limits, LIMITS);
+
+    await eap.acquireEgressPermit("downloader", "downloads.example.com", 120);
+    assert.equal(gateway.last().json()["leaseSeconds"], 120);
+  });
+
+  it("answers a refusal as a permit to wait for, not an error", async () => {
+    // Both answers are 200: being told to wait is the action working.
+    gateway.answer("eap", "acquire-egress-permit", {
+      applicationId: "downloader",
+      site: "downloads.example.com",
+      granted: false,
+      limits: LIMITS,
+      reason: "rate",
+      retryAfterMs: 400,
+    });
+
+    const permit = await eap.acquireEgressPermit("downloader", "downloads.example.com");
+
+    assert.deepEqual([permit.granted, permit.reason, permit.retryAfterMs], [false, EGRESS_RATE, 400]);
+    assert.equal(permit.permitId, "");
+  });
+
+  it("releases a permit, and reports a site that pushed back", async () => {
+    gateway.answer("eap", "release-egress-permit", { applicationId: "downloader", site: "downloads.example.com", released: false });
+    gateway.answer("eap", "report-egress-throttled", {
+      applicationId: "downloader",
+      site: "downloads.example.com",
+      blockedUntil: "2026-10-20T10:02:00Z",
+    });
+
+    // Not held any more is not an error: the slot is free either way.
+    const released = await eap.releaseEgressPermit("downloader", "downloads.example.com", "p-1");
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "downloads.example.com", permitId: "p-1" });
+    assert.equal(released.released, false);
+
+    await eap.reportEgressThrottled("downloader", "downloads.example.com");
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "downloads.example.com" });
+
+    const throttled = await eap.reportEgressThrottled("downloader", "downloads.example.com", 120);
+    assert.equal(gateway.last().json()["retryAfterSeconds"], 120);
+    assert.equal(throttled.blockedUntil, "2026-10-20T10:02:00Z");
+  });
+
+  it("sets only the limits it was given, and refuses a call that names none", async () => {
+    gateway.answer("eap", "set-egress-limit", { applicationId: "downloader", site: "*", limits: LIMITS });
+
+    // An absent limit is left as the site is held to now; sending it as zero would set it to zero.
+    const set = await eap.setEgressLimit("downloader", EGRESS_ALL_SITES, { concurrent: 3 });
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "*", concurrent: 3 });
+    assert.deepEqual(set.limits, LIMITS);
+
+    const sent = gateway.requests.length;
+    await assert.rejects(() => eap.setEgressLimit("downloader", "downloads.example.com", {}), /at least one/);
+    assert.equal(gateway.requests.length, sent);
+  });
+
+  it("removes a limit and answers with what the site falls back to", async () => {
+    gateway.answer("eap", "delete-egress-limit", {
+      applicationId: "downloader",
+      site: "downloads.example.com",
+      limits: { requestsPerSecond: 10, burst: 10, concurrent: 4 },
+    });
+
+    const removed = await eap.deleteEgressLimit("downloader", "downloads.example.com");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "downloads.example.com" });
+    assert.equal(removed.limits.requestsPerSecond, 10);
+  });
+
+  it("lists the sites, and one application's alone when named", async () => {
+    gateway.answer("eap", "list-egress-sites", {
+      defaultLimits: { requestsPerSecond: 10, burst: 10, concurrent: 4 },
+      sites: [
+        { applicationId: "downloader", site: "*", limits: LIMITS, limitsSet: true },
+        {
+          applicationId: "downloader",
+          site: "downloads.example.com",
+          limits: LIMITS,
+          limitsSet: false,
+          tokens: 4.5,
+          inFlight: 1,
+          blockedUntil: "",
+          lastUsed: "2026-10-20T09:59:00Z",
+        },
+      ],
+    });
+
+    const listed = await eap.listEgressSites();
+    assert.deepEqual(gateway.last().json(), {});
+    assert.equal(listed.defaultLimits.concurrent, 4);
+    assert.deepEqual(listed.sites.map((site) => [site.site, site.limitsSet]), [["*", true], ["downloads.example.com", false]]);
+    // The "*" entry has no state of its own, so it reads as zero rather than throwing.
+    assert.deepEqual([listed.sites[0]?.tokens, listed.sites[0]?.inFlight], [0, 0]);
+    assert.deepEqual([listed.sites[1]?.tokens, listed.sites[1]?.inFlight], [4.5, 1]);
+
+    await eap.listEgressSites("downloader");
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader" });
+  });
+
+  it("is refused for another application's permits", async () => {
+    gateway.answer("eap", "acquire-egress-permit", { error: "Not the identity application 'downloader' runs as" }, 403);
+
+    await assert.rejects(
+      () => eap.acquireEgressPermit("downloader", "downloads.example.com"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["acquire-egress-permit", 403]);
+        return true;
+      },
+    );
   });
 });
 
