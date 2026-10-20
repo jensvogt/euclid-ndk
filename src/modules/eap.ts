@@ -45,6 +45,7 @@ import {
   toInfrastructureResult,
   toLoadReport,
   toLogLevelResult,
+  toRebalanceResult,
   toRestartResult,
   toWorkerNodeDetails,
   toWorkerNodes,
@@ -54,6 +55,7 @@ import {
   type InfrastructureResult,
   type LoadReport,
   type LogLevelResult,
+  type RebalanceResult,
   type RestartResult,
   type WorkerNode,
   type WorkerNodeDetails,
@@ -478,6 +480,26 @@ export class EuclidEap extends ModuleClient {
    */
   async restartApplication(applicationId: string): Promise<RestartResult> {
     return toRestartResult(await this.call("restart-application", { applicationId }));
+  }
+
+  /**
+   * Asks for an application's instances to be moved to where placement would put them now: onto a node that
+   * has joined since they were placed, off one holding more than its share for the cores it has, and off one
+   * that is drained, no longer live or no longer matches the application's node labels.
+   *
+   * The manager does this by itself after an instance goes away; this is for every other time - a new node,
+   * or a pool that ended up lopsided and was never scaled since. It moves one instance per pass, each move
+   * stopping one instance and starting its replacement on the better node, until no move would help - so the
+   * pool is at most one instance short while a move is under way, and one already balanced is left exactly as
+   * it is. Nothing else is restarted.
+   *
+   * Like {@link restartApplication}, this only records the request, and nothing has moved when it is
+   * answered. It applies even where the installation has turned automatic rebalancing off: an operator asking
+   * is an operator who means it. A {@link TYPE_JOB} is refused with HTTP 400, since moving one of its runs
+   * would start that run again.
+   */
+  async rebalanceApplication(applicationId: string): Promise<RebalanceResult> {
+    return toRebalanceResult(await this.call("rebalance-application", { applicationId }));
   }
 
   /**

@@ -101,6 +101,7 @@ export type {
   InfrastructureResult,
   LoadReport,
   LogLevelResult,
+  RebalanceResult,
   RestartResult,
   WorkerNode,
   WorkerNodeApplication,

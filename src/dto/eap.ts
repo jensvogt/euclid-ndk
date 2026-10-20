@@ -153,6 +153,19 @@ export interface RestartResult {
 }
 
 /**
+ * What a rebalance request came to.
+ *
+ * `rebalancing` says the request was recorded, not that anything has moved: the manager moves one instance
+ * per pass until no move would help. `instances` is what was running when the request was answered - the
+ * pool there is to spread, not where any of it ended up.
+ */
+export interface RebalanceResult {
+  applicationId: string;
+  rebalancing: boolean;
+  instances: number;
+}
+
+/**
  * What applying an application's infrastructure declaration came to.
  *
  * `declared` false means the application has no declaration stored - not that applying one failed. Nothing was
@@ -326,6 +339,14 @@ export function toRestartResult(document: unknown): RestartResult {
   return {
     applicationId: text(document, "applicationId"),
     restarting: flag(document, "restarting"),
+    instances: number(document, "instances"),
+  };
+}
+
+export function toRebalanceResult(document: unknown): RebalanceResult {
+  return {
+    applicationId: text(document, "applicationId"),
+    rebalancing: flag(document, "rebalancing"),
     instances: number(document, "instances"),
   };
 }
