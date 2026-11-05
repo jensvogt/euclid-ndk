@@ -200,6 +200,34 @@ export interface WorkerNode {
    */
   labels: Record<string, string>;
   cpuCount: number;
+  /**
+   * How much memory this node offers applications, in MiB - and the figure an application's memory limit
+   * is admitted against.
+   *
+   * Less than {@link memoryTotalMb} whenever the worker's own unit caps it: the machine's memory, minus a
+   * `MemoryMax=` and the reserve. **0 means the node has not said**, which placement treats as unknown
+   * rather than as none - a worker too old to report it is not a worker with no memory.
+   */
+  memoryMb: number;
+  /**
+   * The machine's installed physical memory, in MiB, and how much of it was in use at the node's last
+   * renewal - what an operator means by "a 128 GB node", and the pair to read as "64 GB / 128 GB".
+   *
+   * Used is total less what the kernel says is available, so the page cache does not count as used.
+   * Refreshed by every renewal, which makes both exactly as current as {@link lastSeen} says. Zero on a
+   * platform with no reading, or a node that has not said.
+   */
+  memoryTotalMb: number;
+  memoryUsedMb: number;
+  /**
+   * The one-minute load average from the node's last heartbeat, set by the same tick that set
+   * {@link lastSeen}. Divide it by {@link cpuCount} for the figure placement compares nodes on.
+   *
+   * Zero for a heartbeat that carried no reading, which is also what an idle machine reports - the two are
+   * not told apart here, any more than placement tells them apart. A node sharing the manager's own host
+   * publishes no reading at all.
+   */
+  loadAverage: number;
   /** The worker's own version, and the platform it reports running on. */
   version: string;
   os: string;
@@ -348,6 +376,10 @@ export function toWorkerNode(document: unknown): WorkerNode {
     principal: text(document, "principal"),
     labels: stringMap(document, "labels"),
     cpuCount: number(document, "cpuCount"),
+    memoryMb: number(document, "memoryMb"),
+    memoryTotalMb: number(document, "memoryTotalMb"),
+    memoryUsedMb: number(document, "memoryUsedMb"),
+    loadAverage: number(document, "loadAverage"),
     version: text(document, "version"),
     os: text(document, "os"),
     arch: text(document, "arch"),

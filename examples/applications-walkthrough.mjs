@@ -140,6 +140,14 @@ async function nodes(eap) {
       .filter(Boolean)
       .join(", ");
     console.log(`  ${node.name}  ${node.address}  ${node.cpuCount} cpu  ${node.os}/${node.arch}  (${state})`);
+    // 0 means the node has not said rather than that it has none, so there is nothing to print for it.
+    if (node.memoryTotalMb > 0) {
+      console.log(`      memory ${gib(node.memoryUsedMb)} / ${gib(node.memoryTotalMb)} used, ${gib(node.memoryMb)} offered to applications`);
+    }
+    // Divided by the CPU count, which is the figure placement actually compares nodes on.
+    if (node.loadAverage > 0 && node.cpuCount > 0) {
+      console.log(`      load ${node.loadAverage.toFixed(2)} over ${node.cpuCount} cpu = ${(node.loadAverage / node.cpuCount).toFixed(2)} per cpu`);
+    }
     const labels = Object.entries(node.labels);
     if (labels.length > 0) console.log(`      offers ${labels.map(([key, value]) => `${key}=${value}`).join(", ")}`);
   }
@@ -154,6 +162,11 @@ async function nodes(eap) {
   }
   console.log("  drainNode() stops new instances being placed there and lets the rest leave as they are");
   console.log("  replaced - not a stop: the node keeps running what it has, and keeps renewing\n");
+}
+
+/** MiB as the GiB an operator thinks in. */
+function gib(mib) {
+  return `${(mib / 1024).toFixed(1)} GiB`;
 }
 
 /** What deploying one looks like, since this example will not do it to somebody's server. */

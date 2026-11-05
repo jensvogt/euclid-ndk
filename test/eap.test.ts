@@ -75,6 +75,10 @@ const NODE = {
   principal: "worker-01",
   labels: { os: "linux", gpu: "true" },
   cpuCount: 16,
+  memoryMb: 120832,
+  memoryTotalMb: 131072,
+  memoryUsedMb: 65536,
+  loadAverage: 4.5,
   version: "1.2.20",
   os: "Linux",
   arch: "x86_64",
@@ -552,9 +556,25 @@ describe("worker nodes", () => {
     assert.deepEqual(nodes.map((node) => node.name), ["worker-01", "worker-02"]);
     assert.deepEqual(nodes[0]?.labels, { os: "linux", gpu: "true" });
     assert.equal(nodes[0]?.cpuCount, 16);
+    // What applications are offered, and the machine itself: the first is less whenever the worker's
+    // own unit caps it, and it is the one an application's memory limit is admitted against.
+    assert.deepEqual([nodes[0]?.memoryMb, nodes[0]?.memoryTotalMb, nodes[0]?.memoryUsedMb], [120832, 131072, 65536]);
+    assert.equal(nodes[0]?.loadAverage, 4.5);
     // A node that stopped renewing is still registered, and still has whatever it was running on
     // record - which is how an absent host is told from a deregistered one.
     assert.deepEqual([nodes[1]?.live, nodes[1]?.drained], [false, true]);
+  });
+
+  it("reads an unreported memory figure as 0 rather than as none", async () => {
+    // A worker too old to report it, or a platform with no reading. Placement treats 0 as unknown and
+    // does not refuse a memory limit on it, so a caller must not read it as a node with no memory.
+    gateway.answer("eap", "list-nodes", {
+      nodes: [{ name: "worker-03", cpuCount: 8, drained: false, live: true }],
+    });
+
+    const [node] = await eap.listNodes();
+
+    assert.deepEqual([node?.memoryMb, node?.memoryTotalMb, node?.memoryUsedMb, node?.loadAverage], [0, 0, 0, 0]);
   });
 
   it("says what one node is holding slots for", async () => {
