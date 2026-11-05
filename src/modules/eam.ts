@@ -20,12 +20,12 @@ import {
   load as loadCredentials,
   save as saveCredentials,
   updateNamespace as updateCachedNamespace,
+  updateToken as updateCachedToken,
 } from "../credentials.js";
 import {
   type Account,
   type AccessKey,
   type CreateAccessKeyResult,
-  type LoginResult,
   type MyAccounts,
   type Namespace,
   type Grant,
@@ -34,8 +34,8 @@ import {
   toAccessKey,
   toAccount,
   toCreateAccessKeyResult,
-  toLoginResult,
   toMyAccounts,
+  toLoginResult,
   toNamespace,
   toGrant,
   toRole,
@@ -638,86 +638,34 @@ export class EuclidSession {
   }
 
   /**
-   * Renames a user. Administrator only.
+   * Gives a user a different user ID. Administrator only.
    *
-   * A user ID is what everything else names an identity by - a grant's principal, an application's
-   * technical identity, the audit trail's `userId` column - so this moves all of it rather than only the
-   * row. Which is also why it is refused when something would be left behind: an identity an application
-   * runs as is HTTP 409, naming the application, because the rename would leave it running and refused
-   * everything it calls. Point the application at another user with
-   * {@link import("./eap.js").EuclidEap.updateApplication}'s `user` first.
+   * Both ids are named outright, unlike {@link changePassword}: a rename that could mean the caller by
+   * saying nothing is one keystroke from renaming the wrong account. The user's grants and group
+   * memberships move with the name.
    *
-   * Installation-wide rather than this account's: a user ID is unique across euclid, so an application in
-   * a namespace this administrator never looks at is still an application this rename would break.
+   * Refused with HTTP 409 when the new id is taken, and when an application runs as this user anywhere in
+   * the installation - renamed underneath it, the application would keep running and be refused everything
+   * it calls. Point it at another user with {@link import("./eap.js").EuclidEap.updateApplication} first.
+   * Naming the id the user already has is a 400 rather than a success that changed nothing.
    *
-   * Naming the ID the user already has is refused with HTTP 400 rather than answered as a success that
-   * changed nothing - two identical values is a form filled in twice, not a retry. A retry of a rename
-   * that went through names an ID that no longer exists and is answered 404, which is the truthful answer
-   * to it.
+   * A session already open as that user keeps working until its token expires, and then cannot be
+   * refreshed, because its subject no longer resolves.
    */
   async changeUserId(userId: string, newUserId: string): Promise<User> {
     return toUser(((await this.call("change-userid", { userId, newUserId })) as { user?: unknown }).user);
   }
 
   /**
-   * Changes a user's email address. Administrator only.
+   * Gives a user a different email address. Administrator only, because an address is a way in: login
+   * accepts it in place of the user id.
    *
-   * Checked for being an address at all - a name, an `@`, a domain with a dot - and no further. A pattern
-   * that tries to decide which addresses *exist* refuses valid ones, since the rule is longer than anybody
-   * expects and a delivery attempt is the only real test.
-   *
-   * The address another user already has is HTTP 409, and so is the race of two administrators setting the
-   * same one at once - the second is refused by the index rather than becoming a 500. Setting the address
-   * this user already has is HTTP 400, as {@link changeUserId} is for the same reason.
+   * There is no clearing one - an empty address is refused, as is something plainly not an address, the
+   * address the user already has (400), and one another user holds (409). Nothing else about the user
+   * changes, and the user id goes on working for login as it always did.
    */
   async changeEmail(userId: string, email: string): Promise<User> {
     return toUser(((await this.call("change-email", { userId, email })) as { user?: unknown }).user);
-  }
-
-  /**
-   * The accounts this session's user may work in, and which of them is their own.
-   *
-   * What a client with an account picker asks for. `homeAccountId` is the user's own account and is always
-   * among the accounts, so it is what to select when the user has not chosen - an administrator sees every
-   * account of the installation, anybody else sees the accounts their grants name.
-   *
-   * De-duplicated and ordered by the server, so a user with several grants in one account sees it once and
-   * the order does not depend on which grant was written first. An account whose record has gone is still
-   * listed, named after its own ID rather than left blank: a row showing the ID it is about to send beats
-   * a row showing nothing.
-   */
-  async listMyAccounts(): Promise<MyAccounts> {
-    return toMyAccounts(await this.call("list-my-accounts"));
-  }
-
-  /**
-   * Trades this session's token for a fresh one, and adopts it.
-   *
-   * A token does not last as long as a process that holds one, and a login is not the way to renew it: a
-   * password is not always to hand, and an access key is not always there either. This asks the server to
-   * issue a session again for the identity already proven by the token in hand.
-   *
-   * **It changes this session.** The new token replaces the old one here, and the credentials cache is
-   * rewritten when this session caches, so everything built from the session - every module client - keeps
-   * working. A session still presenting the old token is the one thing this call cannot have meant.
-   *
-   * The answer is a login's, down to the field, because that is what the server reissues. The access key
-   * and secret are the ones the session already had: euclid reuses them rather than issuing new ones, so
-   * nothing signed stops verifying.
-   *
-   * Not what a *managed* application wants. euclid rewrites its credentials file before the token in it
-   * expires, and {@link EuclidSession.tokenProvider} is how a session follows that rotation without asking
-   * for anything.
-   */
-  async refreshSession(): Promise<LoginResult> {
-    const result = toLoginResult(await this.call("refresh-session"));
-    // Adopted rather than handed back for the caller to install: the point of refreshing is that this
-    // session goes on working. The server reuses the access key, so the token is all that changes.
-    if (result.token) {
-      this.token = result.token;
-      if (this.#cache) await saveCredentials(this.toCachedCredentials());
-    }
-    return result;
   }
 
   // -- passwords -------------------------------------------------------------------------------
@@ -764,6 +712,48 @@ export class EuclidSession {
       );
     }
     await this.call("change-password", { userId, newPassword });
+  }
+
+  // -- session lifetime ------------------------------------------------------------------------
+
+  /**
+   * Extends this session: the server answers with a fresh token, which this session presents from here
+   * on - and which `~/.euclid/credentials` is brought up to date with, when it holds this user's login on
+   * this server.
+   *
+   * Not a way back in. The request authenticates like any other, so it has to be made *before* the token
+   * expires; an expired one is refused here as everywhere else, and only {@link EuclidEam.login} gets a
+   * session back from that. A process that stays up for longer than a session lasts calls this on a timer
+   * well inside the hour.
+   *
+   * The access key is the one the session already had - the server reuses rather than reissues it - so a
+   * session that signs its requests carries on unchanged. With a {@link tokenProvider} set, the provider's
+   * token is still the one presented; this only replaces {@link token}.
+   *
+   * Answers with this session, as {@link changeNamespace} does.
+   */
+  async refreshSession(): Promise<this> {
+    const token = toLoginResult(await this.call("refresh-session")).token;
+    if (!token) return this;
+    this.token = token;
+    if (this.#cache) await updateCachedToken(this.baseUrl, this.userId, token);
+    return this;
+  }
+
+  /**
+   * The accounts this session's user may work in, and which of them is their own.
+   *
+   * What a client with an account picker asks for. `homeAccountId` is the user's own account and is always
+   * among the accounts, so it is what to select when the user has not chosen - an administrator sees every
+   * account of the installation, anybody else sees the accounts their grants name.
+   *
+   * De-duplicated and ordered by the server, so a user with several grants in one account sees it once and
+   * the order does not depend on which grant was written first. An account whose record has gone is still
+   * listed, named after its own ID rather than left blank: a row showing the ID it is about to send beats
+   * a row showing nothing.
+   */
+  async listMyAccounts(): Promise<MyAccounts> {
+    return toMyAccounts(await this.call("list-my-accounts"));
   }
 
   // -- namespace scoping -----------------------------------------------------------------------

@@ -471,6 +471,116 @@ describe("operations", () => {
     );
     session.close();
   });
+
+  it("renames a user by naming both ids, and answers with the user as renamed", async () => {
+    prepared();
+    gateway.answer("eam", "change-userid", { user: { userId: "jill.doe", ern: "ern:eam:user/jill.doe" } });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const renamed = await session.changeUserId("jill", "jill.doe");
+    session.close();
+
+    // Both, always: a rename that could mean the caller by leaving one out is one keystroke from
+    // renaming the wrong account.
+    assert.deepEqual(gateway.last().json(), { userId: "jill", newUserId: "jill.doe" });
+    assert.equal(renamed.userId, "jill.doe");
+  });
+
+  it("refuses to rename the identity an application runs as", async () => {
+    prepared();
+    gateway.answer(
+      "eam",
+      "change-userid",
+      { error: "User 'app-reports' is the identity application 'reports' runs as." },
+      409,
+    );
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    await assert.rejects(
+      () => session.changeUserId("app-reports", "reports"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["change-userid", 409]);
+        return true;
+      },
+    );
+    session.close();
+  });
+
+  it("gives a user another email address", async () => {
+    prepared();
+    gateway.answer("eam", "change-email", { user: { userId: "jill", email: "jill@example.com" } });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const changed = await session.changeEmail("jill", "jill@example.com");
+    session.close();
+
+    assert.deepEqual(gateway.last().json(), { userId: "jill", email: "jill@example.com" });
+    assert.deepEqual([changed.userId, changed.email], ["jill", "jill@example.com"]);
+  });
+});
+
+// -- session refresh ----------------------------------------------------------------------------------
+
+describe("session refresh", () => {
+  it("presents the fresh token from then on, and caches it", async () => {
+    prepared({ theToken: token(60) });
+    const fresh = token(3600);
+    gateway.tokens.set(fresh, "jens");
+    gateway.answer("eam", "refresh-session", { token: fresh, metadata: { user: "jens" } });
+    gateway.answer("eam", "list-users", { users: [], total: 0 });
+
+    const session = await Euclid.forServer(gateway.baseUrl).access().credentials("jens", "secret").auth(AUTH_BEARER).login();
+    assert.equal(await session.refreshSession(), session);
+    assert.equal(gateway.last().action, "refresh-session");
+
+    await session.listUsers();
+    session.close();
+
+    assert.equal(session.token, fresh);
+    assert.equal(gateway.last().headers["authorization"], `Bearer ${fresh}`);
+    const cached = JSON.parse(await readFile(credentialsFile, "utf8")) as Record<string, unknown>;
+    assert.equal(cached["token"], fresh);
+  });
+
+  it("leaves another user's cached login alone", async () => {
+    // The file holds one login; a long-running process must not overwrite one somebody has since made
+    // as somebody else.
+    prepared();
+    gateway.answer("eam", "refresh-session", { token: token(3600) });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const theirs = token(1800);
+    await save({
+      token: theirs,
+      userId: "jill",
+      accountId: "000000000000",
+      region: "eu-central-1",
+      accessKeyId: "",
+      secretAccessKey: "",
+      isAdmin: false,
+      baseUrl: gateway.baseUrl,
+      namespace: "",
+      raw: {},
+    });
+
+    await session.refreshSession();
+    session.close();
+
+    const cached = JSON.parse(await readFile(credentialsFile, "utf8")) as Record<string, unknown>;
+    assert.equal(cached["token"], theirs);
+  });
+
+  it("is refused once the token has expired, as every other action is", async () => {
+    prepared();
+    gateway.answer("eam", "refresh-session", { error: "Token expired" }, 401);
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const before = session.token;
+    await assert.rejects(() => session.refreshSession(), EuclidServiceError);
+    session.close();
+
+    assert.equal(session.token, before);
+  });
 });
 
 // -- namespace scoping --------------------------------------------------------------------------------

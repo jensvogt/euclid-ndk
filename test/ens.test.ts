@@ -442,6 +442,30 @@ describe("published messages", () => {
     assert.deepEqual([count.available, count.send, count.resend], [12, 30, 2]);
   });
 
+  it("replaces a body and reports the size it displaced", async () => {
+    // topicErn, not queueErn: the two modules answer the same action with different field names,
+    // and reading the wrong one would silently produce an empty string.
+    gateway.answer("ens", "update-message-body", {
+      messageId: "message-1",
+      topicErn: TOPIC,
+      size: 25,
+      previousSize: 10,
+      contentType: "text/plain",
+    });
+
+    const updated = await ens.updateMessageBody("message-1", "0123456789012345678901234");
+
+    assert.equal(gateway.last().action, "update-message-body");
+    assert.deepEqual(gateway.last().json(), {
+      messageId: "message-1",
+      body: "0123456789012345678901234",
+    });
+    assert.equal(updated.topicErn, TOPIC);
+    assert.equal(updated.size, 25);
+    assert.equal(updated.previousSize, 10);
+    assert.equal(updated.contentType, "text/plain");
+  });
+
   it("carries attributes under the key ENS uses", async () => {
     // `key` throughout ENS, where EQS mostly says `name` - the server's own asymmetry.
     gateway.answer("ens", "get-message-attribute", {

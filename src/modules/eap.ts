@@ -31,7 +31,9 @@
  * regardless.
  *
  * Three things here are not that. {@link EuclidEap.reportLoad} is called by an application about itself, so
- * it is open to the identity that application runs as and to nobody else. {@link EuclidEap.listNodes},
+ * it is open to the identity that application runs as and to nobody else - as are the egress permit calls,
+ * {@link EuclidEap.acquireEgressPermit}, {@link EuclidEap.releaseEgressPermit} and
+ * {@link EuclidEap.reportEgressThrottled}, which an administrator may make as well. {@link EuclidEap.listNodes},
  * {@link EuclidEap.getNode} and {@link EuclidEap.drainNode} are open to any authenticated caller, because
  * reading the fleet and taking a host out of rotation are operations work rather than privilege; only
  * {@link EuclidEap.deleteNode} needs an administrator, since freeing a node's name is what would let
@@ -41,39 +43,39 @@
 import {
   toApplication,
   toDeleteNodeResult,
+  toDrainNodeResult,
   toEgressLimitResult,
   toEgressPermit,
   toEgressRelease,
-  toEgressSiteListing,
   toEgressSiteRemoved,
-  toEgressThrottled,
+  toEgressSites,
+  toEgressThrottle,
+  toInfrastructureResult,
+  toLoadReport,
+  toLogLevelResult,
   toPlatform,
   toPlatformResult,
   toPlatforms,
   toRebalanceResult,
-  toDrainNodeResult,
-  toInfrastructureResult,
-  toLoadReport,
-  toLogLevelResult,
   toRestartResult,
   toWorkerNodeDetails,
   toWorkerNodes,
   type Application,
   type DeleteNodeResult,
+  type DrainNodeResult,
   type EgressLimitResult,
   type EgressLimits,
   type EgressPermit,
   type EgressRelease,
-  type EgressSiteListing,
   type EgressSiteRemoved,
-  type EgressThrottled,
-  type Platform,
-  type PlatformResult,
-  type RebalanceResult,
-  type DrainNodeResult,
+  type EgressSites,
+  type EgressThrottle,
   type InfrastructureResult,
   type LoadReport,
   type LogLevelResult,
+  type Platform,
+  type PlatformResult,
+  type RebalanceResult,
   type RestartResult,
   type WorkerNode,
   type WorkerNodeDetails,
@@ -134,6 +136,20 @@ export const STATE_STOPPED = "STOPPED";
  */
 export const TYPE_PROCESS = "PROCESS";
 export const TYPE_JOB = "JOB";
+
+/**
+ * The site that stands for all of an application's sites without a limit of their own - which only
+ * {@link EuclidEap.setEgressLimit} and {@link EuclidEap.deleteEgressLimit} take. Nobody acquires a permit for
+ * it.
+ */
+export const EGRESS_ALL_SITES = "*";
+
+/** Why {@link EuclidEap.acquireEgressPermit} said to wait: the site asked to be left alone for a while. */
+export const EGRESS_BLOCKED = "blocked";
+/** Every slot for the site is held by a request still in flight. */
+export const EGRESS_CONCURRENCY = "concurrency";
+/** The application's bucket for the site is empty. */
+export const EGRESS_RATE = "rate";
 
 /** What a pool is sized at unless the deployment says otherwise. */
 export const DEFAULT_MIN_INSTANCES = 1;
@@ -212,9 +228,6 @@ export interface ScaleApplicationBounds {
   maxInstances?: number;
 }
 
-/** Whatever a site nobody has configured falls back to: an application's own default, for every site. */
-export const EVERY_EGRESS_SITE = "*";
-
 /** What a reconcile does with what a declaration no longer names. */
 export interface ApplyInfrastructureOptions {
   /**
@@ -251,11 +264,6 @@ export interface ApplicationLimits {
   memoryLimitMb?: number;
   /** CPUs per instance, as a fraction - `1.5` is a CPU and a half. */
   cpuLimit?: number;
-}
-
-/** How long a permit is held before it expires on its own. */
-export interface EgressPermitOptions {
-  leaseSeconds?: number;
 }
 
 /** Everything a load report says beyond how busy the instance is. */
@@ -555,6 +563,26 @@ export class EuclidEap extends ModuleClient {
   }
 
   /**
+   * Asks for an application's instances to be moved to where placement would put them now: onto a node that
+   * has joined since they were placed, off one holding more than its share for the cores it has, and off one
+   * that is drained, no longer live or no longer matches the application's node labels.
+   *
+   * The manager does this by itself after an instance goes away; this is for every other time - a new node,
+   * or a pool that ended up lopsided and was never scaled since. It moves one instance per pass, each move
+   * stopping one instance and starting its replacement on the better node, until no move would help - so the
+   * pool is at most one instance short while a move is under way, and one already balanced is left exactly as
+   * it is. Nothing else is restarted.
+   *
+   * Like {@link restartApplication}, this only records the request, and nothing has moved when it is
+   * answered. It applies even where the installation has turned automatic rebalancing off: an operator asking
+   * is an operator who means it. A {@link TYPE_JOB} is refused with HTTP 400, since moving one of its runs
+   * would start that run again.
+   */
+  async rebalanceApplication(applicationId: string): Promise<RebalanceResult> {
+    return toRebalanceResult(await this.call("rebalance-application", { applicationId }));
+  }
+
+  /**
    * Makes the installation match the application's own infrastructure declaration.
    *
    * The declaration is a file the application has already stored beside its artifact -
@@ -669,136 +697,6 @@ export class EuclidEap extends ModuleClient {
     return this.#application("set-application-limits", payload);
   }
 
-  /**
-   * Asks for an application's instances to be placed again.
-   *
-   * What {@link restartApplication} is for a definition that changed, this is for a *fleet* that
-   * changed: a node that was added, drained or had its labels edited leaves a pool sitting where it was
-   * placed, since nothing moves an instance that is running happily. This cycles them so the manager
-   * chooses again.
-   *
-   * Recorded rather than done. `instances` is how many will be worked through, one per reconcile tick,
-   * so the application keeps serving out of the ones not yet reached.
-   */
-  async rebalanceApplication(applicationId: string): Promise<RebalanceResult> {
-    return toRebalanceResult(await this.call("rebalance-application", { applicationId }));
-  }
-
-  // -- egress ----------------------------------------------------------------------------------
-
-  /**
-   * The sites an application calls, with their limits and what those limits are doing now.
-   *
-   * `defaultLimits` is what a site nobody has configured falls back to, and each entry's `limitsSet`
-   * says whether its limits are its own or inherited. `tokens`, `inFlight` and `blockedUntil` are as of
-   * *now* rather than as of the last write: a bucket nobody has drawn on is full, and a permit whose
-   * lease ran out is free.
-   *
-   * The `*` entry is an application's own default rather than a site, and carries no state - nobody
-   * acquires a permit for it.
-   *
-   * @param applicationId one application; empty lists every application's sites
-   */
-  async listEgressSites(applicationId = ""): Promise<EgressSiteListing> {
-    const payload: Record<string, unknown> = {};
-    if (applicationId) payload["applicationId"] = applicationId;
-    return toEgressSiteListing(await this.call("list-egress-sites", payload));
-  }
-
-  /**
-   * Sets how hard an application may call one site.
-   *
-   * A limit left out is left as it stands, and at least one is required. `site` is the host name to be
-   * called - `downloads.example.com` - or {@link EVERY_EGRESS_SITE} to set the application's own
-   * default for every site it has no entry of its own for.
-   *
-   * `burst` above `requestsPerSecond` is what lets an application that has been quiet spend a backlog
-   * at once; `concurrent` is how many permits may be out at the same time, whatever the rate.
-   */
-  async setEgressLimit(applicationId: string, site: string, limits: Partial<EgressLimits>): Promise<EgressLimitResult> {
-    const payload: Record<string, unknown> = { applicationId, site };
-    if (limits.requestsPerSecond !== undefined) payload["requestsPerSecond"] = limits.requestsPerSecond;
-    if (limits.burst !== undefined) payload["burst"] = limits.burst;
-    if (limits.concurrent !== undefined) payload["concurrent"] = limits.concurrent;
-    return toEgressLimitResult(await this.call("set-egress-limit", payload));
-  }
-
-  /**
-   * Takes away a site's own limits, so it inherits again.
-   *
-   * The site stays and keeps its state; what goes is the limits set on it, after which it falls back to
-   * the application's `*` entry or the installation's default. The result says what it is held to now.
-   */
-  async deleteEgressLimit(applicationId: string, site: string): Promise<EgressLimitResult> {
-    return toEgressLimitResult(await this.call("delete-egress-limit", { applicationId, site }));
-  }
-
-  /**
-   * Forgets a site entirely - its limits, its bucket and whatever it had in flight.
-   *
-   * Unlike {@link deleteEgressLimit}, which only takes away the limits. An application that calls the
-   * site again starts it afresh, inheriting its limits, which is what makes this the right call for a
-   * site an application no longer uses rather than one whose limits were wrong.
-   */
-  async deleteEgressSite(applicationId: string, site: string): Promise<EgressSiteRemoved> {
-    return toEgressSiteRemoved(await this.call("delete-egress-site", { applicationId, site }));
-  }
-
-  /**
-   * Asks whether an application may call a site now, and takes a permit if it may.
-   *
-   * Called by the application about itself, before it makes the call - the identity it runs as, or an
-   * administrator, and nobody else. `applicationId` is required and is the one euclid handed the
-   * process in `EUCLID_APPLICATION_ID`.
-   *
-   * **A refusal is not an error.** `granted: false` comes back 200 with `reason` - which limit stood in
-   * the way - and `retryAfterMs`, which is what makes this a rate limiter rather than a failure. A
-   * caller that treats a refusal as an exception has turned a queue into an outage.
-   *
-   * A granted permit has a lease and expires on its own, so an application that dies holding one does
-   * not hold it forever. {@link releaseEgressPermit} is how it is given back early, which is what frees
-   * the slot for the next call rather than leaving it until the lease runs out.
-   *
-   * @param applicationId the application making the call
-   * @param site the host name about to be called
-   * @param options how long to hold the permit for; 1 second to the server's own maximum
-   */
-  async acquireEgressPermit(applicationId: string, site: string, options: EgressPermitOptions = {}): Promise<EgressPermit> {
-    const payload: Record<string, unknown> = { applicationId, site };
-    if (options.leaseSeconds !== undefined) payload["leaseSeconds"] = options.leaseSeconds;
-    return toEgressPermit(await this.call("acquire-egress-permit", payload));
-  }
-
-  /**
-   * Gives a permit back, before its lease runs out.
-   *
-   * `released: false` is not a failure either: it means the lease had already expired and the slot was
-   * free again, which is the ordinary end of a call that took longer than its permit.
-   */
-  async releaseEgressPermit(applicationId: string, site: string, permitId: string): Promise<EgressRelease> {
-    return toEgressRelease(await this.call("release-egress-permit", { applicationId, site, permitId }));
-  }
-
-  /**
-   * Tells euclid that a site refused a call for being called too often, so it stops trying.
-   *
-   * What an application does with a 429 or a `Retry-After`: the site is blocked for the period given,
-   * and every permit for it is refused until then - including the ones other instances of the same
-   * application would have taken, which is the point of reporting it centrally rather than backing off
-   * alone.
-   *
-   * @param retryAfterSeconds how long the site asked to be left alone; at least 1, and the server
-   *   defaults to 60 for a site that gave no figure
-   */
-  async reportEgressThrottled(
-    applicationId: string,
-    site: string,
-    retryAfterSeconds?: number,
-  ): Promise<EgressThrottled> {
-    const payload: Record<string, unknown> = { applicationId, site };
-    if (retryAfterSeconds !== undefined) payload["retryAfterSeconds"] = retryAfterSeconds;
-    return toEgressThrottled(await this.call("report-egress-throttled", payload));
-  }
 
   /**
    * The applications whose ID starts with a prefix; an empty prefix lists them all.
@@ -879,6 +777,112 @@ export class EuclidEap extends ModuleClient {
         applicationId: options.applicationId ?? "",
       }),
     );
+  }
+
+  // -- egress ----------------------------------------------------------------------------------
+
+  /**
+   * Asks for one request's worth of an outside site: a token from the application's bucket for it, and a
+   * slot among its requests to the site in flight - shared by every instance of the application, which is the
+   * point: a limit each instance kept for itself would be multiplied by however many the autoscaler started.
+   *
+   * Never waits. Refused, the answer says why and how long to wait before asking again - see
+   * {@link import("../dto/eap.js").EgressPermit} - and is still not an error. Granted, the request is made
+   * and then the permit {@link releaseEgressPermit released}.
+   *
+   * Called by an application about itself: the caller has to be the identity `applicationId` runs as, or an
+   * administrator. One application can neither spend another's allowance nor block it.
+   *
+   * @param applicationId the application asking - its `EUCLID_APPLICATION_ID`
+   * @param site the host name to be called, e.g. `downloads.example.com`
+   * @param leaseSeconds how long the slot is held if it is not released first - longer than the request can
+   *   take, since one outliving its lease no longer counts. Left out, the server's default of 900; it is
+   *   clamped to between 1 second and 6 hours.
+   */
+  async acquireEgressPermit(applicationId: string, site: string, leaseSeconds?: number): Promise<EgressPermit> {
+    const payload: Record<string, unknown> = { applicationId, site };
+    if (leaseSeconds !== undefined) payload["leaseSeconds"] = leaseSeconds;
+    return toEgressPermit(await this.call("acquire-egress-permit", payload));
+  }
+
+  /**
+   * Gives a permit's slot back, once the request it was for has finished. Answered alike whether the slot
+   * was still held or its lease had already run out - see {@link import("../dto/eap.js").EgressRelease}.
+   *
+   * @param applicationId application name
+   * @param site domain name
+   * @param permitId the permit, from {@link acquireEgressPermit}
+   */
+  async releaseEgressPermit(applicationId: string, site: string, permitId: string): Promise<EgressRelease> {
+    return toEgressRelease(await this.call("release-egress-permit", { applicationId, site, permitId }));
+  }
+
+  /**
+   * Reports that a site refused a request - a 429 or a 503 - so that no instance of the application is
+   * granted a permit for it until the time is up, not only the instance that was told.
+   *
+   * @param applicationId application name
+   * @param site domain name
+   * @param retryAfterSeconds how long the site asked to be left alone, its `Retry-After`. Left out, the
+   *   server's default of 60; at least 1.
+   */
+  async reportEgressThrottled(applicationId: string, site: string, retryAfterSeconds?: number): Promise<EgressThrottle> {
+    const payload: Record<string, unknown> = { applicationId, site };
+    if (retryAfterSeconds !== undefined) payload["retryAfterSeconds"] = retryAfterSeconds;
+    return toEgressThrottle(await this.call("report-egress-throttled", payload));
+  }
+
+  /**
+   * Sets what one application is allowed for one site, over the installation's default. Persisted, so it
+   * applies to every EAP instance at once and survives a restart.
+   *
+   * Only what `limits` names changes; the rest stays as the site is held to now. A `burst` below 1 is raised
+   * to 1 by the server, and the answer says what was stored.
+   *
+   * @param site a host name, or {@link EGRESS_ALL_SITES} for every site of the application that has no limit
+   *   of its own
+   * @param limits at least one of the three - a call naming none would change nothing, and is refused here
+   *   before the round trip
+   */
+  async setEgressLimit(applicationId: string, site: string, limits: Partial<EgressLimits>): Promise<EgressLimitResult> {
+    const payload: Record<string, unknown> = { applicationId, site };
+    for (const field of ["requestsPerSecond", "burst", "concurrent"] as const) {
+      if (limits[field] !== undefined) payload[field] = limits[field];
+    }
+    if (Object.keys(payload).length === 2) {
+      throw new Error("setEgressLimit() needs at least one of requestsPerSecond, burst or concurrent");
+    }
+    return toEgressLimitResult(await this.call("set-egress-limit", payload));
+  }
+
+  /**
+   * Takes an application's site back to what it would be held to without a limit of its own, and answers
+   * with what that is. HTTP 404 if it had none.
+   *
+   * The state stays - tokens, slots in flight, a block - since forgetting the slots would let the site be
+   * overrun the moment this is called.
+   */
+  async deleteEgressLimit(applicationId: string, site: string): Promise<EgressLimitResult> {
+    return toEgressLimitResult(await this.call("delete-egress-limit", { applicationId, site }));
+  }
+
+  /**
+   * Forgets a site entirely - its limits, its bucket and whatever it had in flight.
+   *
+   * Unlike {@link deleteEgressLimit}, which only takes away the limits. An application that calls the
+   * site again starts it afresh, inheriting its limits, which is what makes this the right call for a
+   * site an application no longer uses rather than one whose limits were wrong.
+   */
+  async deleteEgressSite(applicationId: string, site: string): Promise<EgressSiteRemoved> {
+    return toEgressSiteRemoved(await this.call("delete-egress-site", { applicationId, site }));
+  }
+
+  /**
+   * Every site the applications of this session's account and namespace call, what each is allowed and how
+   * it stands now; one application's alone when `applicationId` is given.
+   */
+  async listEgressSites(applicationId = ""): Promise<EgressSites> {
+    return toEgressSites(await this.call("list-egress-sites", applicationId ? { applicationId } : {}));
   }
 
   // -- worker nodes ----------------------------------------------------------------------------

@@ -15,13 +15,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 import {
+  EGRESS_ALL_SITES,
+  EGRESS_RATE,
   Euclid,
   LOG_DEBUG,
   RUNTIME_JAVA,
   RUNTIME_JAVA21,
   RUNTIME_JAVA25,
   RUNTIME_PYTHON,
-  EVERY_EGRESS_SITE,
   STATE_RUNNING,
   STATE_STOPPED,
   TYPE_JOB,
@@ -472,6 +473,39 @@ describe("running", () => {
     assert.equal(restarted.instances, 3);
   });
 
+  it("asks for a rebalance rather than waiting for one", async () => {
+    // The manager moves one instance per pass, so what comes back says the request was recorded and how
+    // big the pool is - not where anything ended up.
+    gateway.answer("eap", "rebalance-application", {
+      applicationId: "order-service",
+      rebalancing: true,
+      instances: 4,
+    });
+
+    const rebalanced = await eap.rebalanceApplication("order-service");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
+    assert.deepEqual([rebalanced.applicationId, rebalanced.rebalancing, rebalanced.instances], ["order-service", true, 4]);
+  });
+
+  it("is refused when asked to rebalance a job", async () => {
+    // A job's instance is a run of it, and moving one would start that run again.
+    gateway.answer(
+      "eap",
+      "rebalance-application",
+      { error: "Refusing to rebalance 'nightly-import': it is a JOB, and moving a run would start it again" },
+      400,
+    );
+
+    await assert.rejects(
+      () => eap.rebalanceApplication("nightly-import"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["rebalance-application", 400]);
+        return true;
+      },
+    );
+  });
+
   it("names what applying a declaration created and what it removed", async () => {
     gateway.answer("eap", "apply-infrastructure", {
       applicationId: "order-service",
@@ -559,25 +593,9 @@ describe("worker nodes", () => {
     assert.deepEqual(nodes.map((node) => node.name), ["worker-01", "worker-02"]);
     assert.deepEqual(nodes[0]?.labels, { os: "linux", gpu: "true" });
     assert.equal(nodes[0]?.cpuCount, 16);
-    // What applications are offered, and the machine itself: the first is less whenever the worker's
-    // own unit caps it, and it is the one an application's memory limit is admitted against.
-    assert.deepEqual([nodes[0]?.memoryMb, nodes[0]?.memoryTotalMb, nodes[0]?.memoryUsedMb], [120832, 131072, 65536]);
-    assert.equal(nodes[0]?.loadAverage, 4.5);
     // A node that stopped renewing is still registered, and still has whatever it was running on
     // record - which is how an absent host is told from a deregistered one.
     assert.deepEqual([nodes[1]?.live, nodes[1]?.drained], [false, true]);
-  });
-
-  it("reads an unreported memory figure as 0 rather than as none", async () => {
-    // A worker too old to report it, or a platform with no reading. Placement treats 0 as unknown and
-    // does not refuse a memory limit on it, so a caller must not read it as a node with no memory.
-    gateway.answer("eap", "list-nodes", {
-      nodes: [{ name: "worker-03", cpuCount: 8, drained: false, live: true }],
-    });
-
-    const [node] = await eap.listNodes();
-
-    assert.deepEqual([node?.memoryMb, node?.memoryTotalMb, node?.memoryUsedMb, node?.loadAverage], [0, 0, 0, 0]);
   });
 
   it("says what one node is holding slots for", async () => {
@@ -686,7 +704,159 @@ describe("reporting load", () => {
   });
 });
 
-describe("limits and placement", () => {
+describe("egress", () => {
+  const LIMITS = { requestsPerSecond: 2.5, burst: 5, concurrent: 3 };
+
+  it("asks for a permit, and leaves the lease to the server unless one is given", async () => {
+    gateway.answer("eap", "acquire-egress-permit", {
+      applicationId: "downloader",
+      site: "downloads.example.com",
+      granted: true,
+      limits: LIMITS,
+      permitId: "p-1",
+      expiresAt: "2026-10-20T10:15:00Z",
+    });
+
+    const permit = await eap.acquireEgressPermit("downloader", "downloads.example.com");
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "downloads.example.com" });
+    assert.deepEqual([permit.granted, permit.permitId, permit.expiresAt], [true, "p-1", "2026-10-20T10:15:00Z"]);
+    assert.deepEqual(permit.limits, LIMITS);
+
+    await eap.acquireEgressPermit("downloader", "downloads.example.com", 120);
+    assert.equal(gateway.last().json()["leaseSeconds"], 120);
+  });
+
+  it("answers a refusal as a permit to wait for, not an error", async () => {
+    // Both answers are 200: being told to wait is the action working.
+    gateway.answer("eap", "acquire-egress-permit", {
+      applicationId: "downloader",
+      site: "downloads.example.com",
+      granted: false,
+      limits: LIMITS,
+      reason: "rate",
+      retryAfterMs: 400,
+    });
+
+    const permit = await eap.acquireEgressPermit("downloader", "downloads.example.com");
+
+    assert.deepEqual([permit.granted, permit.reason, permit.retryAfterMs], [false, EGRESS_RATE, 400]);
+    assert.equal(permit.permitId, "");
+  });
+
+  it("releases a permit, and reports a site that pushed back", async () => {
+    gateway.answer("eap", "release-egress-permit", { applicationId: "downloader", site: "downloads.example.com", released: false });
+    gateway.answer("eap", "report-egress-throttled", {
+      applicationId: "downloader",
+      site: "downloads.example.com",
+      blockedUntil: "2026-10-20T10:02:00Z",
+    });
+
+    // Not held any more is not an error: the slot is free either way.
+    const released = await eap.releaseEgressPermit("downloader", "downloads.example.com", "p-1");
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "downloads.example.com", permitId: "p-1" });
+    assert.equal(released.released, false);
+
+    await eap.reportEgressThrottled("downloader", "downloads.example.com");
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "downloads.example.com" });
+
+    const throttled = await eap.reportEgressThrottled("downloader", "downloads.example.com", 120);
+    assert.equal(gateway.last().json()["retryAfterSeconds"], 120);
+    assert.equal(throttled.blockedUntil, "2026-10-20T10:02:00Z");
+  });
+
+  it("sets only the limits it was given, and refuses a call that names none", async () => {
+    gateway.answer("eap", "set-egress-limit", { applicationId: "downloader", site: "*", limits: LIMITS });
+
+    // An absent limit is left as the site is held to now; sending it as zero would set it to zero.
+    const set = await eap.setEgressLimit("downloader", EGRESS_ALL_SITES, { concurrent: 3 });
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "*", concurrent: 3 });
+    assert.deepEqual(set.limits, LIMITS);
+
+    const sent = gateway.requests.length;
+    await assert.rejects(() => eap.setEgressLimit("downloader", "downloads.example.com", {}), /at least one/);
+    assert.equal(gateway.requests.length, sent);
+  });
+
+  it("removes a limit and answers with what the site falls back to", async () => {
+    gateway.answer("eap", "delete-egress-limit", {
+      applicationId: "downloader",
+      site: "downloads.example.com",
+      limits: { requestsPerSecond: 10, burst: 10, concurrent: 4 },
+    });
+
+    const removed = await eap.deleteEgressLimit("downloader", "downloads.example.com");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader", site: "downloads.example.com" });
+    assert.equal(removed.limits.requestsPerSecond, 10);
+  });
+
+  it("lists the sites, and one application's alone when named", async () => {
+    gateway.answer("eap", "list-egress-sites", {
+      defaultLimits: { requestsPerSecond: 10, burst: 10, concurrent: 4 },
+      sites: [
+        { applicationId: "downloader", site: "*", limits: LIMITS, limitsSet: true },
+        {
+          applicationId: "downloader",
+          site: "downloads.example.com",
+          limits: LIMITS,
+          limitsSet: false,
+          tokens: 4.5,
+          inFlight: 1,
+          blockedUntil: "",
+          lastUsed: "2026-10-20T09:59:00Z",
+        },
+      ],
+    });
+
+    const listed = await eap.listEgressSites();
+    assert.deepEqual(gateway.last().json(), {});
+    assert.equal(listed.defaultLimits.concurrent, 4);
+    assert.deepEqual(listed.sites.map((site) => [site.site, site.limitsSet]), [["*", true], ["downloads.example.com", false]]);
+    // The "*" entry has no state of its own, so it reads as zero rather than throwing.
+    assert.deepEqual([listed.sites[0]?.tokens, listed.sites[0]?.inFlight], [0, 0]);
+    assert.deepEqual([listed.sites[1]?.tokens, listed.sites[1]?.inFlight], [4.5, 1]);
+
+    await eap.listEgressSites("downloader");
+    assert.deepEqual(gateway.last().json(), { applicationId: "downloader" });
+  });
+
+  it("is refused for another application's permits", async () => {
+    gateway.answer("eap", "acquire-egress-permit", { error: "Not the identity application 'downloader' runs as" }, 403);
+
+    await assert.rejects(
+      () => eap.acquireEgressPermit("downloader", "downloads.example.com"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["acquire-egress-permit", 403]);
+        return true;
+      },
+    );
+  });
+});
+
+describe("what a node offers", () => {
+  it("reports its memory and its load", async () => {
+    gateway.answer("eap", "list-nodes", { total: 1, nodes: [NODE] });
+
+    const [node] = await eap.listNodes();
+
+    // What applications are offered, and the machine itself: the first is less whenever the worker's
+    // own unit caps it, and it is the one an application's memory limit is admitted against.
+    assert.deepEqual([node?.memoryMb, node?.memoryTotalMb, node?.memoryUsedMb], [120832, 131072, 65536]);
+    assert.equal(node?.loadAverage, 4.5);
+  });
+
+  it("reads an unreported figure as 0 rather than as none", async () => {
+    // A worker too old to report it, or a platform with no reading. Placement treats 0 as unknown and
+    // does not refuse a memory limit on it, so a caller must not read it as a node with no memory.
+    gateway.answer("eap", "list-nodes", { nodes: [{ name: "worker-03", cpuCount: 8, live: true }] });
+
+    const [node] = await eap.listNodes();
+
+    assert.deepEqual([node?.memoryMb, node?.memoryTotalMb, node?.memoryUsedMb, node?.loadAverage], [0, 0, 0, 0]);
+  });
+});
+
+describe("per-instance limits", () => {
   it("sets one limit without saying anything about the other", async () => {
     gateway.answer("eap", "set-application-limits", { ...APPLICATION, memoryLimitMb: 2048 });
 
@@ -712,20 +882,6 @@ describe("limits and placement", () => {
         return true;
       },
     );
-  });
-
-  it("asks for a pool to be placed again", async () => {
-    gateway.answer("eap", "rebalance-application", {
-      applicationId: "order-service",
-      rebalancing: true,
-      instances: 4,
-    });
-
-    const result = await eap.rebalanceApplication("order-service");
-
-    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
-    // Recorded rather than done: four instances to work through, one per reconcile tick.
-    assert.deepEqual([result.rebalancing, result.instances], [true, 4]);
   });
 });
 
@@ -849,137 +1005,20 @@ describe("platforms", () => {
   });
 });
 
-describe("egress", () => {
-  it("lists the sites an application calls, with their limits as of now", async () => {
-    gateway.answer("eap", "list-egress-sites", {
-      defaultLimits: { requestsPerSecond: 10, burst: 20, concurrent: 4 },
-      sites: [
-        {
-          applicationId: "order-service",
-          site: "downloads.example.com",
-          limits: { requestsPerSecond: 2, burst: 10, concurrent: 1 },
-          limitsSet: true,
-          tokens: 7.5,
-          inFlight: 1,
-          blockedUntil: "2026-11-05T09:10:00Z",
-          lastUsed: "2026-11-05T09:00:00Z",
-        },
-        // The "*" entry is the application's own default and has no state of its own.
-        {
-          applicationId: "order-service",
-          site: "*",
-          limits: { requestsPerSecond: 5, burst: 5, concurrent: 2 },
-          limitsSet: true,
-        },
-      ],
-    });
-
-    const listing = await eap.listEgressSites("order-service");
-
-    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
-    assert.equal(listing.defaultLimits.requestsPerSecond, 10);
-    // As of now rather than as of the last write: a bucket nobody drew on is full again.
-    assert.deepEqual([listing.sites[0]?.tokens, listing.sites[0]?.inFlight], [7.5, 1]);
-    assert.equal(listing.sites[0]?.blockedUntil, "2026-11-05T09:10:00Z");
-    assert.equal(listing.sites[1]?.site, EVERY_EGRESS_SITE);
-    assert.equal(listing.sites[1]?.tokens, 0);
-  });
-
-  it("sets, clears and forgets a site's limits", async () => {
-    const limits = { requestsPerSecond: 2, burst: 10, concurrent: 1 };
-    gateway.answer("eap", "set-egress-limit", { applicationId: "order-service", site: "downloads.example.com", limits });
-    gateway.answer("eap", "delete-egress-limit", {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      limits: { requestsPerSecond: 10, burst: 20, concurrent: 4 },
-    });
+describe("forgetting an egress site", () => {
+  it("removes the site rather than only its limits", async () => {
     gateway.answer("eap", "delete-egress-site", {
       applicationId: "order-service",
       site: "downloads.example.com",
       removed: true,
     });
 
-    await eap.setEgressLimit("order-service", "downloads.example.com", { requestsPerSecond: 2, concurrent: 1 });
-    // Only what was given: burst was not named and is left as it stands.
-    assert.deepEqual(gateway.last().json(), {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      requestsPerSecond: 2,
-      concurrent: 1,
-    });
-
-    // Clearing the limits leaves the site and says what it is held to now - the inherited figures.
-    const cleared = await eap.deleteEgressLimit("order-service", "downloads.example.com");
-    assert.equal(cleared.limits.requestsPerSecond, 10);
-
+    // Unlike deleteEgressLimit, which leaves the site inheriting: this forgets its bucket and
+    // whatever it had in flight, so the next call starts the site afresh.
     const removed = await eap.deleteEgressSite("order-service", "downloads.example.com");
-    assert.equal(removed.removed, true);
-  });
-
-  it("treats a refused permit as an answer rather than an error", async () => {
-    gateway.answer("eap", "acquire-egress-permit", {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      granted: false,
-      limits: { requestsPerSecond: 2, burst: 10, concurrent: 1 },
-      reason: "Concurrency",
-      retryAfterMs: 100,
-    });
-
-    // 200, not an exception: a caller that threw here would have turned a queue into an outage.
-    const refused = await eap.acquireEgressPermit("order-service", "downloads.example.com");
 
     assert.deepEqual(gateway.last().json(), { applicationId: "order-service", site: "downloads.example.com" });
-    assert.equal(refused.granted, false);
-    assert.deepEqual([refused.reason, refused.retryAfterMs], ["Concurrency", 100]);
-    assert.equal(refused.permitId, "");
-  });
-
-  it("takes a permit, gives it back, and reports a site that refused the call", async () => {
-    gateway.answer("eap", "acquire-egress-permit", {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      granted: true,
-      limits: { requestsPerSecond: 2, burst: 10, concurrent: 1 },
-      permitId: "permit-1",
-      expiresAt: "2026-11-05T09:00:30Z",
-    });
-    gateway.answer("eap", "release-egress-permit", {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      released: true,
-    });
-    gateway.answer("eap", "report-egress-throttled", {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      blockedUntil: "2026-11-05T09:01:00Z",
-    });
-
-    const permit = await eap.acquireEgressPermit("order-service", "downloads.example.com", { leaseSeconds: 30 });
-    assert.deepEqual(gateway.last().json(), {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      leaseSeconds: 30,
-    });
-    // A permit has a lease, so an application that dies holding one does not hold it forever.
-    assert.deepEqual([permit.permitId, permit.expiresAt], ["permit-1", "2026-11-05T09:00:30Z"]);
-
-    const released = await eap.releaseEgressPermit("order-service", "downloads.example.com", permit.permitId);
-    assert.deepEqual(gateway.last().json(), {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      permitId: "permit-1",
-    });
-    assert.equal(released.released, true);
-
-    // Reported centrally, so every instance of the application backs off rather than each finding out.
-    const throttled = await eap.reportEgressThrottled("order-service", "downloads.example.com", 60);
-    assert.deepEqual(gateway.last().json(), {
-      applicationId: "order-service",
-      site: "downloads.example.com",
-      retryAfterSeconds: 60,
-    });
-    assert.equal(throttled.blockedUntil, "2026-11-05T09:01:00Z");
+    assert.equal(removed.removed, true);
   });
 });
 

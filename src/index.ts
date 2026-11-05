@@ -103,9 +103,9 @@ export type {
   EgressPermit,
   EgressRelease,
   EgressSite,
-  EgressSiteListing,
   EgressSiteRemoved,
-  EgressThrottled,
+  EgressSites,
+  EgressThrottle,
   Endpoint,
   InfrastructureChange,
   InfrastructureKept,
@@ -288,7 +288,10 @@ export {
   DEFAULT_MAX_INSTANCES,
   DEFAULT_MIN_INSTANCES,
   DEFAULT_READY_TIMEOUT_MS,
-  EVERY_EGRESS_SITE,
+  EGRESS_ALL_SITES,
+  EGRESS_BLOCKED,
+  EGRESS_CONCURRENCY,
+  EGRESS_RATE,
   EuclidEap,
   LOG_DEBUG,
   LOG_ERROR,
@@ -310,7 +313,6 @@ export {
   type ApplicationLimits,
   type ApplyInfrastructureOptions,
   type CreateApplicationOptions,
-  type EgressPermitOptions,
   type PlanInfrastructureOptions,
   type PlatformOptions,
   type ReportLoadOptions,
@@ -447,7 +449,7 @@ export {
 } from "./modules/esm.js";
 
 /** The version this package was published as. */
-export const VERSION = "0.18.0";
+export const VERSION = "0.19.0";
 
 /** Options {@link Euclid.login} passes through to the builder, for the case that needs no builder. */
 export interface LoginOptions {

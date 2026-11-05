@@ -82,6 +82,20 @@ export async function updateNamespace(baseUrl: string, namespace: string): Promi
 }
 
 /**
+ * Patches the cached token in place, if what is cached is this user's session on `baseUrl`.
+ *
+ * Checked against the user as well as the server, unlike {@link updateNamespace}: the file holds one login,
+ * and a long-running process refreshing its own session must not overwrite the one somebody has since made
+ * as another user from the command line.
+ */
+export async function updateToken(baseUrl: string, userId: string, token: string): Promise<void> {
+  const cached = await load();
+  if (cached === null || cached.baseUrl !== baseUrl || cached.userId !== userId) return;
+  cached.token = token;
+  await save(cached);
+}
+
+/**
  * Whether a JWT is well-formed and its `exp` is still in the future.
  *
  * Checked locally to avoid a round trip that would only tell us what the token already says. The

@@ -214,8 +214,9 @@ credentials file; the retry then has a fresh token to use.
 | Method | Action |
 | --- | --- |
 | `listUsers`, `getUser`, `register`, `deleteUser` | users |
-| `changeUserId`, `changeEmail` | renaming an identity, and the address on it |
+| `changeUserId`, `changeEmail` | renaming a user, or giving them another address to log in with, as an administrator |
 | `changePassword`, `resetPassword` | your own password, given the current one; or somebody else's, as an administrator |
+| `refreshSession` | a fresh token for a session that is still valid, for a process that outlives one |
 | `createAccessKey`, `listAccessKeys`, `deleteAccessKey` | the caller's own signing credentials |
 | `createUserGroup`, `listUserGroups`, `getUserGroup`, `deleteUserGroup`, `addUserToUserGroup`, `removeUserFromUserGroup` | groups |
 | `createAccount`, `listAccounts`, `getAccount`, `deleteAccount` | accounts |
@@ -742,14 +743,14 @@ while `scan` reads the table, which is right for an export and wrong for a looku
 | Method | Action |
 | --- | --- |
 | `createApplication`, `updateApplication`, `copyApplication`, `redeployApplication`, `deleteApplication` | deploying |
-| `startApplication`, `stopApplication`, `restartApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
+| `startApplication`, `stopApplication`, `restartApplication`, `rebalanceApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
 | `applyInfrastructure`, `planInfrastructure` | making the installation match the application's own declaration, or seeing what that would do |
 | `listPlatforms`, `getPlatform`, `applyPlatform`, `planPlatform` | the shared infrastructure nobody's application owns |
-| `setApplicationLimits`, `rebalanceApplication` | what one instance may use, and placing a pool again |
-| `listEgressSites`, `setEgressLimit`, `deleteEgressLimit`, `deleteEgressSite` | how hard an application may call a site |
-| `acquireEgressPermit`, `releaseEgressPermit`, `reportEgressThrottled` | an application asking before it calls one |
+| `setApplicationLimits` | what one instance of an application may use |
 | `setLogLevel`, `resetLogLevel` | what one application logs, without restarting it |
 | `reportLoad` | an application telling euclid how busy it is, which is what the autoscaler acts on |
+| `acquireEgressPermit`, `releaseEgressPermit`, `reportEgressThrottled` | an application pacing its calls to an outside site, across all of its instances |
+| `setEgressLimit`, `deleteEgressLimit`, `deleteEgressSite`, `listEgressSites` | how fast each application may call each outside site, and how it stands |
 | `listNodes`, `getNode`, `drainNode`, `resumeNode`, `deleteNode` | the worker nodes applications are placed on |
 | `metrics` | EAP's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
@@ -946,7 +947,7 @@ the next call. `released: false` is not a failure either - it means the lease ha
 permit for it is refused until then, **including the ones other instances of the same application would
 have taken**, which is the point of reporting it centrally rather than backing off alone.
 
-Operators set the limits with `setEgressLimit`, per site or - with `EVERY_EGRESS_SITE` - as the
+Operators set the limits with `setEgressLimit`, per site or - with `EGRESS_ALL_SITES` - as the
 application's own default. `burst` above `requestsPerSecond` lets an application that has been quiet spend
 a backlog at once; `concurrent` caps how many permits may be out whatever the rate. `listEgressSites`
 shows each site's limits and `limitsSet` says whether they are its own or inherited, with `tokens`,
