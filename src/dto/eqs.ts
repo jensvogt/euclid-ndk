@@ -169,6 +169,18 @@ export interface QueueMaxMessageLengthResult {
   effectiveMaxMessageLength: number;
 }
 
+/**
+ * A queue's retry limit after setting it: how many times a message may be received before it is moved to
+ * the dead letter queue.
+ *
+ * A message keeps the receive count it already has, measured against the new limit on its *next* receive -
+ * so lowering the limit below what a message has reached moves it then rather than now.
+ */
+export interface QueueMaxRetriesResult {
+  ern: string;
+  maxRetries: number;
+}
+
 /** A queue's status after starting or stopping it, and how many messages are waiting on it. */
 export interface QueueStatusResult {
   ern: string;
@@ -347,6 +359,10 @@ export function toQueueMessageMetadata(document: unknown): QueueMessageMetadata 
 
 export function toQueueDelayResult(document: unknown): QueueDelayResult {
   return { ern: text(document, "ern"), delay: number(document, "delay") };
+}
+
+export function toQueueMaxRetriesResult(document: unknown): QueueMaxRetriesResult {
+  return { ern: text(document, "ern"), maxRetries: number(document, "maxRetries") };
 }
 
 export function toQueueMaxMessageLengthResult(document: unknown): QueueMaxMessageLengthResult {

@@ -27,6 +27,7 @@ import {
   toQueue,
   toQueueDelayResult,
   toQueueMaxMessageLengthResult,
+  toQueueMaxRetriesResult,
   toQueueMessage,
   toQueueMessageAttribute,
   toQueueMessageCount,
@@ -40,6 +41,7 @@ import {
   type Queue,
   type QueueDelayResult,
   type QueueMaxMessageLengthResult,
+  type QueueMaxRetriesResult,
   type QueueMessage,
   type QueueMessageAttribute,
   type QueueMessageCount,
@@ -426,6 +428,25 @@ export class EuclidEqs extends ModuleClient {
     }
     const response = await this.call("set-queue-max-message-length", { ern, maxMessageLength });
     return toQueueMaxMessageLengthResult(response);
+  }
+
+  /**
+   * Changes how many times a message may be received before it is moved to the dead letter queue.
+   *
+   * The same figure {@link createQueue}'s `maxRetries` sets, for a queue that already exists - which is
+   * what a queue whose consumer turned out to fail more often than anybody expected needs, without
+   * draining and recreating it.
+   *
+   * A message keeps the receive count it already has, and it is measured against the new limit on its
+   * *next* receive: lowering the limit below what a message has reached moves it then rather than now.
+   * Nothing is moved by this call.
+   *
+   * @param maxRetries 1 to 1000 - the bounds SQS holds `maxReceiveCount` to, and the server refuses
+   *   anything outside them. Zero in particular, which would send every message to the dead letter queue
+   *   on its first receive and leave a queue nobody can consume from.
+   */
+  async setQueueMaxRetries(ern: string, maxRetries: number): Promise<QueueMaxRetriesResult> {
+    return toQueueMaxRetriesResult(await this.call("set-queue-max-retries", { ern, maxRetries }));
   }
 
   /**

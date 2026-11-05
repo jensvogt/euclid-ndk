@@ -470,6 +470,34 @@ describe("published messages", () => {
   });
 });
 
+describe("delete after delivery", () => {
+  it("removes a message once every subscriber has had it", async () => {
+    gateway.answer("ens", "set-topic-delete-after-delivery", { ern: TOPIC, deleteAfterDelivery: true });
+
+    const result = await ens.setTopicDeleteAfterDelivery(TOPIC, true);
+
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, deleteAfterDelivery: true });
+    assert.equal(result.deleteAfterDelivery, true);
+
+    // False is a value, not an omission: it is how a topic goes back to keeping its deliveries.
+    gateway.answer("ens", "set-topic-delete-after-delivery", { ern: TOPIC, deleteAfterDelivery: false });
+    await ens.setTopicDeleteAfterDelivery(TOPIC, false);
+    assert.deepEqual(gateway.last().json(), { ern: TOPIC, deleteAfterDelivery: false });
+  });
+
+  it("reports it on the topic's metadata", async () => {
+    gateway.answer("ens", "get-topic-metadata", {
+      name: "order-events",
+      ern: TOPIC,
+      messages: 0,
+      status: "RUNNING",
+      deleteAfterDelivery: true,
+    });
+
+    assert.equal((await ens.getTopicMetadata(TOPIC)).deleteAfterDelivery, true);
+  });
+});
+
 describe("changing a published message", () => {
   it("corrects the copy the topic still holds", async () => {
     gateway.answer("ens", "update-message-body", {

@@ -46,6 +46,7 @@ import {
   toTopicMetadata,
   toTopicRetentionResult,
   toResendResult,
+  toTopicDeleteAfterDeliveryResult,
   toTopicStateResult,
   toTopicUpdateMessageBodyResult,
   type CreateTopicResult,
@@ -57,6 +58,7 @@ import {
   type TopicMetadata,
   type TopicRetentionResult,
   type ResendResult,
+  type TopicDeleteAfterDeliveryResult,
   type TopicStateResult,
   type TopicUpdateMessageBodyResult,
 } from "../dto/ens.js";
@@ -293,6 +295,30 @@ export class EuclidEns extends ModuleClient {
       );
     }
     return toTopicRetentionResult(await this.call("set-topic-retention", { ern, retentionPeriod }));
+  }
+
+  /**
+   * Removes a message once every subscriber has had it, rather than keeping it until its retention runs
+   * out.
+   *
+   * The other answer to the problem {@link setTopicRetention} solves, and the tighter one: a topic is
+   * fanned out at publish time, so nothing ever consumes its messages and a retention period is only how
+   * long the record of a delivery outlives the delivery itself. Where that record is not wanted, this
+   * removes it as soon as it is complete, and the collection stops growing with traffic rather than with
+   * time.
+   *
+   * What it costs is exactly that record: `listMessages`, `getMessage` and {@link resendMessages} have
+   * nothing to work with once a message is gone, so a topic whose deliveries have to be replayable or
+   * auditable wants a retention period instead.
+   *
+   * Applies to what is published from here on. The messages the topic already holds were delivered under
+   * the old rule and stay until their retention runs out - turning this on is not a purge, and
+   * {@link purgeTopic} is the call that is.
+   */
+  async setTopicDeleteAfterDelivery(ern: string, deleteAfterDelivery: boolean): Promise<TopicDeleteAfterDeliveryResult> {
+    return toTopicDeleteAfterDeliveryResult(
+      await this.call("set-topic-delete-after-delivery", { ern, deleteAfterDelivery }),
+    );
   }
 
   /**

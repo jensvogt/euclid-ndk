@@ -403,7 +403,7 @@ sends it either way, because there an empty value is the instruction.
 | `deleteQueue({ ifEmpty })`, `purgeQueue({ background })` | removing one only if nothing is using it; emptying a backlog without waiting |
 | `addQueueTag`, `setQueueTag`, `deleteQueueTag` | queue tags |
 | `stopQueue`, `startQueue`, `setQueueVisibility` | what a queue hands out, and for how long |
-| `setQueueDelay`, `setQueueMaxMessageLength` | how long a send is held back, and how large it may be |
+| `setQueueDelay`, `setQueueMaxMessageLength`, `setQueueMaxRetries` | how long a send is held back, how large it may be, and how often it may be received |
 | `sendMessage`, `sendMessageBatch`, `receiveMessages`, `receiveAllMessages`, `deleteMessage`, `deleteMessageById` | messages |
 | `listMessages`, `getMessageCount`, `getMessageMetadata` | inspecting a queue without consuming it |
 | `getMessageAttribute`, `setMessageAttribute`, `setMessageVisibility`, `updateMessageBody` | one message at a time |
@@ -485,11 +485,18 @@ instrumentation says so rather than leaving the server to guess from a rate.
 | `addTopicTag`, `setTopicTag`, `deleteTopicTag` | topic tags |
 | `stopTopic`, `startTopic` | holding delivery, and handing over what was held |
 | `resendMessages` | handing what the topic still holds to its subscribers again |
-| `setTopicRetention`, `setTopicMaxMessageLength` | how long a published message is kept, and how large it may be |
+| `setTopicRetention`, `setTopicMaxMessageLength`, `setTopicDeleteAfterDelivery` | how long a published message is kept, how large it may be, and whether it is kept at all |
 | `publishMessage`, `listMessages`, `getMessageCount` | messages |
 | `getMessageAttribute`, `setMessageAttribute`, `updateMessageBody` | one published message at a time |
 | `subscribe`, `listSubscriptions`, `unsubscribe` | delivery onward to a queue |
 | `metrics` | ENS's own metrics |
+
+`setTopicDeleteAfterDelivery` is the other answer to the problem retention solves, and the tighter one: a
+message is removed as soon as every subscriber has had it, so the collection stops growing with traffic
+rather than with time. What it costs is the record of the delivery - `listMessages`, `getMessage` and
+`resendMessages` have nothing to work with once a message is gone - so a topic whose deliveries have to be
+replayable or auditable wants a retention period instead. Either way it applies to what is published from
+here on; turning it on is not a purge.
 
 `updateMessageBody` replaces a stored body - the whole of it, since a body is opaque to euclid and
 there is nothing that could merge two. Both modules answer with `previousSize` alongside the new one,

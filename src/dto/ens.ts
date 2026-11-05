@@ -92,6 +92,12 @@ export interface TopicMetadata {
    * that was stopped - has any, and the server only counts them for a topic that is stopped.
    */
   held: number;
+  /**
+   * Whether a message is removed once every subscriber has had it, rather than kept until its retention
+   * runs out - see
+   * {@link import("../modules/ens.js").EuclidEns.setTopicDeleteAfterDelivery}.
+   */
+  deleteAfterDelivery: boolean;
 }
 
 /**
@@ -136,6 +142,17 @@ export interface ResendResult {
 export interface TopicMaxMessageLengthResult {
   ern: string;
   maxMessageLength: number;
+}
+
+/**
+ * Whether a topic now removes a message once it has been delivered to every subscriber.
+ *
+ * What is published from here on. The messages the topic already holds were delivered under the old rule
+ * and stay until their retention runs out - turning this on is not a purge, and `purgeTopic` is.
+ */
+export interface TopicDeleteAfterDeliveryResult {
+  ern: string;
+  deleteAfterDelivery: boolean;
 }
 
 /**
@@ -242,7 +259,12 @@ export function toTopicMetadata(document: unknown): TopicMetadata {
     status: text(document, "status"),
     retentionPeriod: number(document, "retentionPeriod"),
     held: number(document, "held"),
+    deleteAfterDelivery: flag(document, "deleteAfterDelivery"),
   };
+}
+
+export function toTopicDeleteAfterDeliveryResult(document: unknown): TopicDeleteAfterDeliveryResult {
+  return { ern: text(document, "ern"), deleteAfterDelivery: flag(document, "deleteAfterDelivery") };
 }
 
 export function toTopicStateResult(document: unknown): TopicStateResult {

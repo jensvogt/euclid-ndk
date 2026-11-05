@@ -523,6 +523,28 @@ describe("messages", () => {
     assert.deepEqual([background.async, background.messages], [true, 41000]);
   });
 
+  it("changes the retry limit on a queue that already exists", async () => {
+    gateway.answer("eqs", "set-queue-max-retries", { ern: QUEUE, maxRetries: 10 });
+
+    const result = await eqs.setQueueMaxRetries(QUEUE, 10);
+
+    assert.deepEqual(gateway.last().json(), { ern: QUEUE, maxRetries: 10 });
+    assert.equal(result.maxRetries, 10);
+  });
+
+  it("leaves a retry limit outside 1..1000 to the server to refuse", async () => {
+    // Zero in particular: it would send every message to the dead letter queue on its first receive.
+    gateway.answer("eqs", "set-queue-max-retries", { error: "maxRetries must be between 1 and 1000" }, 400);
+
+    await assert.rejects(
+      () => eqs.setQueueMaxRetries(QUEUE, 0),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["set-queue-max-retries", 400]);
+        return true;
+      },
+    );
+  });
+
   it("replaces a message body and says what it replaced", async () => {
     gateway.answer("eqs", "update-message-body", {
       messageId: "message-1",
