@@ -81,6 +81,7 @@ export type {
   CreateAccessKeyResult,
   LoginResult,
   Metadata,
+  MyAccounts,
   Namespace,
   Page,
   User,

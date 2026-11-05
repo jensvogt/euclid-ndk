@@ -92,6 +92,17 @@ idea where to send it.
 
 Pass `useCache(false)` to force a fresh login and leave the file alone.
 
+`refreshSession()` trades the token in hand for a new one and **adopts it**: the session's own token is
+replaced and the cache rewritten, so every module client built from it keeps working. A login is not the
+way to renew a token - a password is not always to hand, and an access key is not either - and the server
+reissues the access key rather than minting a new one, so nothing signed stops verifying. A euclid-managed
+application wants `tokenProvider` instead, since euclid rewrites its credentials file before the token in
+it expires.
+
+`changeUserId` moves an identity rather than a row: a grant's principal, an application's technical
+identity and the audit trail all name a user by its ID, so the rename takes all of them - and is refused
+with 409, naming the application, when a running application would be left authenticating as nobody.
+
 ### Account and namespace scope
 
 Everything euclid stores belongs to an account and a namespace. The account is the logged-in user's; the
@@ -203,15 +214,18 @@ credentials file; the retry then has a fresh token to use.
 | Method | Action |
 | --- | --- |
 | `listUsers`, `getUser`, `register`, `deleteUser` | users |
+| `changeUserId`, `changeEmail` | renaming an identity, and the address on it |
 | `changePassword`, `resetPassword` | your own password, given the current one; or somebody else's, as an administrator |
 | `createAccessKey`, `listAccessKeys`, `deleteAccessKey` | the caller's own signing credentials |
 | `createUserGroup`, `listUserGroups`, `getUserGroup`, `deleteUserGroup`, `addUserToUserGroup`, `removeUserFromUserGroup` | groups |
 | `createAccount`, `listAccounts`, `getAccount`, `deleteAccount` | accounts |
+| `listMyAccounts` | the accounts this user may work in, and which is their own |
 | `createNamespace`, `listNamespaces`, `deleteNamespace` | namespaces |
 | `createRole`, `updateRole`, `getRole`, `listRoles`, `deleteRole` | what a role of this account carries |
 | `grantRole`, `revokeRole`, `listGrants` | who may do what, and where |
 | `checkPermission`, `listPermissions` | why a call was allowed or refused, and what can be granted at all |
 | `changeNamespace` | which namespace this session is scoped to |
+| `refreshSession` | a fresh token for this session, which it adopts |
 | `metrics` | EAM's own metrics |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 

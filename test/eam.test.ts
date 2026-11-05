@@ -475,6 +475,100 @@ describe("operations", () => {
 
 // -- namespace scoping --------------------------------------------------------------------------------
 
+describe("identities and accounts", () => {
+  it("renames a user, and leaves the application refusal to the server", async () => {
+    prepared();
+    gateway.answer("eam", "change-userid", { user: { userId: "jens.vogt", email: "jens@example.com" } });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const renamed = await session.changeUserId("jens", "jens.vogt");
+
+    assert.deepEqual(gateway.last().json(), { userId: "jens", newUserId: "jens.vogt" });
+    assert.equal(renamed.userId, "jens.vogt");
+
+    // A rename that would leave an application authenticating as nobody is refused, naming it - the
+    // grant, the audit column and the application's identity all move with the id, or none of it does.
+    gateway.answer(
+      "eam",
+      "change-userid",
+      { error: "User 'app-parser' is the identity application 'parser' runs as." },
+      409,
+    );
+    await assert.rejects(
+      () => session.changeUserId("app-parser", "parser-identity"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["change-userid", 409]);
+        return true;
+      },
+    );
+    session.close();
+  });
+
+  it("changes an email address", async () => {
+    prepared();
+    gateway.answer("eam", "change-email", { user: { userId: "jens", email: "jens.vogt@example.com" } });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const changed = await session.changeEmail("jens", "jens.vogt@example.com");
+
+    assert.deepEqual(gateway.last().json(), { userId: "jens", email: "jens.vogt@example.com" });
+    assert.equal(changed.email, "jens.vogt@example.com");
+    session.close();
+  });
+
+  it("lists the accounts a user may work in, and which is their own", async () => {
+    prepared();
+    gateway.answer("eam", "list-my-accounts", {
+      homeAccountId: "000000000000",
+      total: 2,
+      accounts: [
+        { accountId: "000000000000", name: "acme" },
+        // An account whose record has gone is named after its own id rather than left blank.
+        { accountId: "111111111111", name: "111111111111" },
+      ],
+    });
+
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret");
+    const mine = await session.listMyAccounts();
+
+    assert.equal(mine.homeAccountId, "000000000000");
+    assert.deepEqual(mine.accounts.map((account) => account.name), ["acme", "111111111111"]);
+    // Always among the accounts, which is what makes it the one to select by default.
+    assert.ok(mine.accounts.some((account) => account.accountId === mine.homeAccountId));
+    session.close();
+  });
+
+  it("adopts the token a refresh hands back", async () => {
+    prepared();
+    // A token the gateway will actually accept afterwards, so the next request can be checked.
+    // A longer expiry than the login's, so it is a different token as well as an acceptable one.
+    const refreshed = token(7200);
+    gateway.tokens.set(refreshed, "jens");
+    gateway.answer("eam", "refresh-session", {
+      token: refreshed,
+      accessKeyId: ACCESS_KEY_ID,
+      secretAccessKey: "secret",
+      isAdmin: true,
+    });
+
+    // A bearer session, so that the token is what the next request actually carries.
+    const session = await Euclid.forServer(gateway.baseUrl).login("jens", "secret", { auth: AUTH_BEARER });
+    const before = session.token;
+
+    const result = await session.refreshSession();
+
+    // The point of refreshing is that this session goes on working, so it takes the new token itself.
+    assert.notEqual(session.token, before);
+    assert.equal(session.token, refreshed);
+    assert.equal(result.token, refreshed);
+
+    gateway.answer("eam", "list-users", { total: 0, users: [] });
+    await session.listUsers();
+    assert.equal(gateway.last().headers["authorization"], `Bearer ${refreshed}`);
+    session.close();
+  });
+});
+
 describe("namespace scoping", () => {
   it("scopes later calls and keeps the cache in step", async () => {
     prepared();

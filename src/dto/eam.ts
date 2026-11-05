@@ -125,6 +125,19 @@ export interface LoginResult {
   raw: Record<string, unknown>;
 }
 
+/**
+ * The accounts a user may work in, and which of them is their own.
+ *
+ * `homeAccountId` is always among `accounts`, and is what a client with an account picker should select
+ * when the user has not chosen. An administrator sees every account of the installation; anybody else sees
+ * the accounts their grants name.
+ */
+export interface MyAccounts {
+  homeAccountId: string;
+  total: number;
+  accounts: Account[];
+}
+
 /** One page of something, and how many exist in total. */
 export interface Page<T> {
   total: number;
@@ -212,6 +225,14 @@ export function toAccount(document: unknown): Account {
     description: text(document, "description"),
     created: text(document, "created"),
     modified: text(document, "modified"),
+  };
+}
+
+export function toMyAccounts(document: unknown): MyAccounts {
+  return {
+    homeAccountId: text(document, "homeAccountId"),
+    total: number(document, "total"),
+    accounts: documents(document, "accounts").map(toAccount),
   };
 }
 
