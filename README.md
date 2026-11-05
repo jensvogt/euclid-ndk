@@ -1121,6 +1121,7 @@ collections.
 | `setLogLevel`, `resetLogLevel` | what one module logs, without restarting it |
 | `stopModule`, `startModule`, `restartModule` | taking a module out of service, and cycling one |
 | `exportArchive`, `importArchive` | the module collections as documents, out of the database and back in |
+| `listBackups`, `createBackup` | the backups the server writes for itself, and one started now |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
 Two unrelated jobs live here, together because both are about the installation rather than anything stored
@@ -1198,6 +1199,15 @@ A sealed export of named modules is **one request per module**, every frame seal
 why the archive carries `frames` rather than a single payload - a file holding ten modules is then not also
 one response holding them. `exportArchive` does that loop and the salt-sharing itself; `all` stays a single
 request, since there is nothing to tie together.
+
+`listBackups` and `createBackup` are the server's *own* backups rather than this call's: euclid writes
+them on a schedule into a directory of its own, and the listing answers that configuration - the schedule,
+how many are kept, whether backups are enabled at all - beside the files, because a caller asking what
+backups exist usually wants to know whether backups are happening. Each file's `complete` is worth reading:
+a backup is written by a detached thread, so a server that went down mid-write leaves a payload behind and
+the listing shows it rather than hiding it. `createBackup` answers 202 before anything is written, so the
+name it gives is something to look for in a later listing; a second one while the first is running is 409.
+The files stay on the server's filesystem - `exportArchive` is how an archive comes off it through this SDK.
 
 An import upserts each document by its `_id`, replacing the whole document rather than merging fields, so
 what lands matches the export exactly. A wrong passphrase and an altered file fail the same way and nothing

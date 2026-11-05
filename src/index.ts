@@ -126,6 +126,9 @@ export type {
 } from "./dto/ekm.js";
 export type {
   Archive,
+  Backup,
+  BackupListing,
+  BackupStarted,
   ImportResult,
   ImportedCollection,
   InstanceLimitsResult,

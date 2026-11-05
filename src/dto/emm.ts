@@ -235,6 +235,64 @@ export interface ImportResult {
   skipped: SkippedCollection[];
 }
 
+/**
+ * One backup file on the server, as the backup directory holds it.
+ *
+ * `complete` is the field to read before trusting one: a backup is written by a detached thread, so a
+ * process that went down mid-write leaves a payload behind and a listing shows it as incomplete rather
+ * than hiding it. `accountId` and `namespace` say which scope the file holds, both empty for the
+ * installation-wide one and the namespace empty for an account's own.
+ */
+export interface Backup {
+  name: string;
+  /** Where it is on the server's own filesystem, which is where it stays - nothing here downloads one. */
+  path: string;
+  accountId: string;
+  namespace: string;
+  /** When the backup it belongs to started, taken from the file name rather than from the clock. */
+  startedAt: string;
+  modified: string;
+  size: number;
+  complete: boolean;
+}
+
+/**
+ * The backups on the server, and the schedule they are written on.
+ *
+ * Everything but `backups` is the installation's own configuration, answered here because a caller asking
+ * what backups exist is usually asking whether backups are happening at all - and `enabled: false` with an
+ * empty list is a different answer from an empty list on its own.
+ *
+ * `full` is what the *next* backup will take, not what the listed ones did, and is false whenever a
+ * passphrase is configured: a sealed backup is never a full one.
+ */
+export interface BackupListing {
+  directory: string;
+  enabled: boolean;
+  /** The cron expression the nightly backup runs on. */
+  schedule: string;
+  /** How many backups are kept before the oldest is removed. */
+  keep: number;
+  full: boolean;
+  encrypted: boolean;
+  backups: Backup[];
+}
+
+/**
+ * A backup that has been *started* - answered with HTTP 202, before anything is written.
+ *
+ * The file does not exist yet, and nothing here waits for it: `name` is what to look for in a later
+ * {@link import("../modules/emm.js").EuclidEmm.listBackups}, where `complete` says whether it finished.
+ */
+export interface BackupStarted {
+  name: string;
+  directory: string;
+  startedAt: string;
+  /** What this backup will actually take - false whenever the installation configures a passphrase. */
+  full: boolean;
+  encrypted: boolean;
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toModuleInstance(document: unknown): ModuleInstance {
@@ -284,6 +342,43 @@ export function toModule(document: unknown): Module {
 
 export function toModules(document: unknown): Module[] {
   return documents(document, "modules").map(toModule);
+}
+
+export function toBackup(document: unknown): Backup {
+  return {
+    name: text(document, "name"),
+    path: text(document, "path"),
+    accountId: text(document, "accountId"),
+    namespace: text(document, "namespace"),
+    startedAt: text(document, "startedAt"),
+    modified: text(document, "modified"),
+    size: number(document, "size"),
+    complete: flag(document, "complete"),
+  };
+}
+
+export function toBackupListing(document: unknown): BackupListing {
+  return {
+    directory: text(document, "directory"),
+    // True when the server did not say: backups are on unless an installation turned them off, and
+    // reading silence as "off" would report a working installation as one with no backups.
+    enabled: flag(document, "enabled", true),
+    schedule: text(document, "schedule"),
+    keep: number(document, "keep"),
+    full: flag(document, "full"),
+    encrypted: flag(document, "encrypted"),
+    backups: documents(document, "backups").map(toBackup),
+  };
+}
+
+export function toBackupStarted(document: unknown): BackupStarted {
+  return {
+    name: text(document, "name"),
+    directory: text(document, "directory"),
+    startedAt: text(document, "startedAt"),
+    full: flag(document, "full"),
+    encrypted: flag(document, "encrypted"),
+  };
 }
 
 export function toInstanceLimitsResult(document: unknown): InstanceLimitsResult {

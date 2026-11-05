@@ -296,6 +296,91 @@ describe("stopping, starting and restarting", () => {
 
 // -- export and import ----------------------------------------------------------------------------
 
+describe("backups", () => {
+  it("lists the backups and the schedule they are written on", async () => {
+    gateway.answer("emm", "list-backups", {
+      directory: "/var/lib/euclid/backup",
+      enabled: true,
+      schedule: "0 2 * * *",
+      keep: 7,
+      full: false,
+      encrypted: true,
+      backups: [
+        {
+          name: "euclid-backup-20261104T020000.json",
+          path: "/var/lib/euclid/backup/euclid-backup-20261104T020000.json",
+          accountId: "",
+          namespace: "",
+          startedAt: "2026-11-04T02:00:00Z",
+          modified: "2026-11-04T02:03:11Z",
+          size: 8172634,
+          complete: true,
+        },
+        // A server that went down mid-write leaves its payload behind, and the listing shows it.
+        { name: "euclid-backup-20261105T020000.json", size: 221184, complete: false },
+      ],
+    });
+
+    const listing = await emm.listBackups();
+
+    assert.deepEqual([listing.enabled, listing.schedule, listing.keep], [true, "0 2 * * *", 7]);
+    // A sealed backup is never a full one, and `full` is what the next backup will take.
+    assert.deepEqual([listing.encrypted, listing.full], [true, false]);
+    assert.deepEqual(listing.backups.map((backup) => backup.complete), [true, false]);
+    assert.equal(listing.backups[0]?.size, 8172634);
+    // Both empty is the installation-wide file; an account's own names the account.
+    assert.deepEqual([listing.backups[0]?.accountId, listing.backups[0]?.namespace], ["", ""]);
+  });
+
+  it("reads a listing that says nothing as backups being on", async () => {
+    // Backups are on unless an installation turned them off, so silence must not report a working
+    // installation as one with no backups.
+    gateway.answer("emm", "list-backups", { directory: "/var/lib/euclid/backup", backups: [] });
+
+    assert.equal((await emm.listBackups()).enabled, true);
+  });
+
+  it("starts one now, and only sends full when it was named", async () => {
+    gateway.answer(
+      "emm",
+      "create-backup",
+      {
+        name: "euclid-backup-20261105T114500.json",
+        directory: "/var/lib/euclid/backup",
+        startedAt: "2026-11-05T11:45:00Z",
+        full: false,
+        encrypted: true,
+      },
+      202,
+    );
+
+    const started = await emm.createBackup();
+    // Nothing sent: the installation's own setting decides, and false would override a configuration
+    // that asked for a full backup.
+    assert.deepEqual(gateway.last().json(), {});
+    // Asked for nothing, and told what will actually be taken - full is dropped for a sealed backup.
+    assert.deepEqual([started.full, started.encrypted], [false, true]);
+    assert.equal(started.name, "euclid-backup-20261105T114500.json");
+
+    await emm.createBackup(true);
+    assert.deepEqual(gateway.last().json(), { full: true });
+    await emm.createBackup(false);
+    assert.deepEqual(gateway.last().json(), { full: false });
+  });
+
+  it("refuses a second backup while one is being written", async () => {
+    gateway.answer("emm", "create-backup", { error: "a backup is already being written; see list-backups" }, 409);
+
+    await assert.rejects(
+      () => emm.createBackup(),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["create-backup", 409]);
+        return true;
+      },
+    );
+  });
+});
+
 describe("export", () => {
   it("exports named modules in one request", async () => {
     gateway.answer("emm", "export", {

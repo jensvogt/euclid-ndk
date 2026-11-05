@@ -38,6 +38,8 @@
 
 import {
   toArchive,
+  toBackupListing,
+  toBackupStarted,
   toImportResult,
   toInstanceLimitsResult,
   toModuleLogLevelResult,
@@ -46,6 +48,8 @@ import {
   toModules,
   toRestartModuleResult,
   type Archive,
+  type BackupListing,
+  type BackupStarted,
   type ImportResult,
   type InstanceLimitsResult,
   type Module,
@@ -284,6 +288,48 @@ export class EuclidEmm extends ModuleClient {
    */
   async restartModule(name: string): Promise<RestartModuleResult> {
     return toRestartModuleResult(await this.call("restart-module", { name }));
+  }
+
+  // -- backups ---------------------------------------------------------------------------------
+
+  /**
+   * The backups the server has written, and the schedule it writes them on.
+   *
+   * Everything but the list is the installation's own configuration, answered here because a caller
+   * asking what backups exist usually wants to know whether backups are happening at all: `enabled:
+   * false` with an empty list is a different answer from an empty list on its own.
+   *
+   * `complete` is the field to read on each one. A backup is written by a detached thread, so a server
+   * that went down mid-write leaves its payload behind, and the listing shows it rather than hiding it.
+   *
+   * The files stay on the server's filesystem - `path` says where. Nothing here downloads one;
+   * {@link exportArchive} is how an archive is taken off the server through this SDK.
+   */
+  async listBackups(): Promise<BackupListing> {
+    return toBackupListing(await this.call("list-backups"));
+  }
+
+  /**
+   * Starts a backup now, rather than waiting for the nightly one.
+   *
+   * Answered with HTTP 202 before anything is written: the file does not exist yet, and nothing here
+   * waits for it. What comes back is the name to look for in a later {@link listBackups}, where
+   * `complete` says whether it finished.
+   *
+   * One at a time. A backup already being written answers HTTP 409 rather than starting a second that
+   * would write to the same name.
+   *
+   * @param full take the bulk child data too - EQS and ENS messages, ESM objects - instead of the
+   *   installation's own `euclid.modules.emm.backup.full`. **Dropped when a passphrase is configured**:
+   *   a sealed backup is never a full one, and the answer's `full` says what will actually be taken
+   *   rather than what was asked for.
+   */
+  async createBackup(full?: boolean): Promise<BackupStarted> {
+    const payload: Record<string, unknown> = {};
+    // Left out entirely unless named, so the installation's own setting decides: sending false would
+    // override a configuration that asked for a full backup.
+    if (full !== undefined) payload["full"] = full;
+    return toBackupStarted(await this.call("create-backup", payload));
   }
 
   // -- export and import -----------------------------------------------------------------------
