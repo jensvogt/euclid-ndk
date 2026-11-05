@@ -13,7 +13,7 @@
  * the other, so what this SDK says matches what euclid-cli sees.
  */
 
-import { number, stringMap, text } from "./json.js";
+import { documents, flag, number, object, stringMap, strings, text } from "./json.js";
 
 /** What a push calls the two types. */
 export const GAUGE = "gauge";
@@ -135,4 +135,259 @@ export function toMetricSample(document: unknown): MetricSample {
     resolution: text(document, "resolution"),
     timestamp: text(document, "timestamp"),
   };
+}
+
+// -- the metric catalog ----------------------------------------------------------------------------
+
+/**
+ * One metric the installation knows about, rather than one reading of it.
+ *
+ * `series` is how many distinct label combinations have been seen under this name, which is the figure
+ * that decides what a metric costs: every series is its own stored row per step, forever. `labelNames`
+ * says which labels those combinations are made of.
+ */
+export interface MetricCatalogEntry {
+  name: string;
+  /** `RATE` or `GAUGE`, in upper case, as a stored row spells it. */
+  type: string;
+  series: number;
+  labelNames: string[];
+  lastSeen: string;
+}
+
+/** What metrics exist, and how many there are in all. */
+export interface MetricCatalog {
+  total: number;
+  items: MetricCatalogEntry[];
+}
+
+// -- alerts ----------------------------------------------------------------------------------------
+
+/**
+ * A threshold rule on one metric.
+ *
+ * `warning` and `critical` are `null` when the rule carries no threshold of that kind - at least one of
+ * them is always set, and `null` is not zero: a rule alerting above 0 is a different thing from one with
+ * no warning level at all.
+ *
+ * `resolution` is always `RAW`. A rule on the hourly or daily tier would be judging a rollup computed
+ * minutes or hours after the fact, which is a report rather than an alert, and the server refuses it.
+ */
+export interface AlertRule {
+  ruleId: string;
+  /** The metric this rule judges. */
+  name: string;
+  /** The series it narrows to; empty watches every series of that metric. */
+  labels: Record<string, string>;
+  resolution: string;
+  /** Which of a row's three figures is judged - see {@link import("../modules/emo.js").STATISTIC_MAX}. */
+  statistic: string;
+  /** Which side of the threshold is the wrong one - `ABOVE` or `BELOW`. */
+  comparison: string;
+  warning: number | null;
+  critical: number | null;
+  /** How many consecutive periods must breach before the alert fires, and how many must clear it. */
+  forPeriods: number;
+  clearPeriods: number;
+  /** After how many silent periods a series counts as `NODATA`; zero never raises that. */
+  noDataAfterPeriods: number;
+  enabled: boolean;
+  description: string;
+  accountId: string;
+  namespace: string;
+  created: string;
+  modified: string;
+}
+
+/**
+ * Where one series stands against its rule, now.
+ *
+ * `state` is `OK`, `WARNING`, `CRITICAL` or `NODATA`, and `severity` is the server's own ordering of
+ * those - worth sorting on rather than deriving, so a client and the server agree on what is worse.
+ * `since` is when the series entered this state, which is what makes an alert that has been firing for
+ * an hour tell itself apart from one that fired a moment ago.
+ */
+export interface Alert {
+  ruleId: string;
+  name: string;
+  labels: Record<string, string>;
+  state: string;
+  severity: number;
+  since: string;
+  /** The reading that put it here. */
+  value: number;
+  lastSeen: string;
+  statistic: string;
+  comparison: string;
+  warning: number | null;
+  critical: number | null;
+  description: string;
+  namespace: string;
+}
+
+/**
+ * One move from one state to another, as the history kept it.
+ *
+ * `previous` and `state` are the two ends of the move, `threshold` the figure that was crossed - `null`
+ * for a transition no threshold caused, such as a series going quiet - and `reason` the server's own
+ * words for why.
+ */
+export interface AlertTransition {
+  ruleId: string;
+  name: string;
+  labels: Record<string, string>;
+  previous: string;
+  state: string;
+  severity: number;
+  value: number;
+  threshold: number | null;
+  statistic: string;
+  reason: string;
+  timestamp: string;
+  accountId: string;
+  namespace: string;
+}
+
+// -- dashboards ------------------------------------------------------------------------------------
+
+/**
+ * One saved dashboard layout.
+ *
+ * `dashboard` is opaque to this SDK and to euclid: whatever object a client saved is what it gets back,
+ * stored as one JSON object and nothing more. Dashboards belong to the user who saved them.
+ */
+export interface Dashboard {
+  name: string;
+  dashboard: Record<string, unknown>;
+  created: string;
+  modified: string;
+}
+
+/** One dashboard in a listing - the name and the dates, without the panels. */
+export interface DashboardSummary {
+  name: string;
+  created: string;
+  modified: string;
+}
+
+/** A dashboard as it was saved: the name it is under, whose it is, and when it last changed. */
+export interface SavedDashboard {
+  name: string;
+  userId: string;
+  modified: string;
+}
+
+// -- parsers ---------------------------------------------------------------------------------------
+
+export function toMetricCatalogEntry(document: unknown): MetricCatalogEntry {
+  return {
+    name: text(document, "name"),
+    type: text(document, "type"),
+    series: number(document, "series"),
+    labelNames: strings(document, "labelNames"),
+    lastSeen: text(document, "lastSeen"),
+  };
+}
+
+export function toMetricCatalog(document: unknown): MetricCatalog {
+  return {
+    total: number(document, "total"),
+    items: documents(document, "items").map(toMetricCatalogEntry),
+  };
+}
+
+export function toAlertRule(document: unknown): AlertRule {
+  return {
+    ruleId: text(document, "ruleId"),
+    name: text(document, "name"),
+    labels: stringMap(document, "labels"),
+    resolution: text(document, "resolution"),
+    statistic: text(document, "statistic"),
+    comparison: text(document, "comparison"),
+    warning: threshold(document, "warning"),
+    critical: threshold(document, "critical"),
+    forPeriods: number(document, "forPeriods"),
+    clearPeriods: number(document, "clearPeriods"),
+    noDataAfterPeriods: number(document, "noDataAfterPeriods"),
+    // A rule is in force unless it says otherwise, which is what the server stores by default.
+    enabled: flag(document, "enabled", true),
+    description: text(document, "description"),
+    accountId: text(document, "accountId"),
+    namespace: text(document, "namespace"),
+    created: text(document, "created"),
+    modified: text(document, "modified"),
+  };
+}
+
+export function toAlert(document: unknown): Alert {
+  return {
+    ruleId: text(document, "ruleId"),
+    name: text(document, "name"),
+    labels: stringMap(document, "labels"),
+    state: text(document, "state"),
+    severity: number(document, "severity"),
+    since: text(document, "since"),
+    value: number(document, "value"),
+    lastSeen: text(document, "lastSeen"),
+    statistic: text(document, "statistic"),
+    comparison: text(document, "comparison"),
+    warning: threshold(document, "warning"),
+    critical: threshold(document, "critical"),
+    description: text(document, "description"),
+    namespace: text(document, "namespace"),
+  };
+}
+
+export function toAlertTransition(document: unknown): AlertTransition {
+  return {
+    ruleId: text(document, "ruleId"),
+    name: text(document, "name"),
+    labels: stringMap(document, "labels"),
+    previous: text(document, "previous"),
+    state: text(document, "state"),
+    severity: number(document, "severity"),
+    value: number(document, "value"),
+    threshold: threshold(document, "threshold"),
+    statistic: text(document, "statistic"),
+    reason: text(document, "reason"),
+    timestamp: text(document, "timestamp"),
+    accountId: text(document, "accountId"),
+    namespace: text(document, "namespace"),
+  };
+}
+
+export function toDashboard(document: unknown): Dashboard {
+  return {
+    name: text(document, "name"),
+    dashboard: object(object(document)["dashboard"]),
+    created: text(document, "created"),
+    modified: text(document, "modified"),
+  };
+}
+
+export function toDashboardSummary(document: unknown): DashboardSummary {
+  return {
+    name: text(document, "name"),
+    created: text(document, "created"),
+    modified: text(document, "modified"),
+  };
+}
+
+export function toSavedDashboard(document: unknown): SavedDashboard {
+  return {
+    name: text(document, "name"),
+    userId: text(document, "userId"),
+    modified: text(document, "modified"),
+  };
+}
+
+/**
+ * A threshold field: a number, or `null` for one the rule does not carry.
+ *
+ * Null rather than zero, because zero is a threshold somebody may well have set - a rule alerting above 0
+ * is a different thing from a rule with no warning level - and `number()` could not tell them apart.
+ */
+function threshold(document: unknown, name: string): number | null {
+  const value = object(document)[name];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

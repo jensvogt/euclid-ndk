@@ -1092,7 +1092,10 @@ under a client mid-session.
 | --- | --- |
 | `pushMetrics` | adding an application's own measurements to the installation's |
 | `registry` | meters that accumulate in the process and publish on a step |
-| `listMetrics`, `average` | reading the rows back (administrator-only) |
+| `listMetrics`, `average`, `listMetricCatalog` | reading the rows back, and what metrics exist at all (administrator-only) |
+| `createAlertRule`, `updateAlertRule`, `deleteAlertRule`, `listAlertRules` | thresholds on a metric |
+| `listAlerts`, `listAlertHistory` | where every watched series stands, and what changed when |
+| `saveDashboard`, `getDashboard`, `listDashboards`, `deleteDashboard` | layouts, per user |
 | `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
 
 euclid's own modules push their samples here rather than being polled, because a module the autoscaler is
@@ -1158,6 +1161,59 @@ import { RESOLUTION_HOUR } from "euclid-ndk";
 const rows = await emo.listMetrics({ name: "invoices.parsed", since, resolution: RESOLUTION_HOUR });
 const mean = await emo.average({ name: "invoice.parse.total" });
 ```
+
+### Alerts
+
+A rule is a threshold on one metric, judged against the raw tier:
+
+```ts
+import { COMPARISON_ABOVE, STATISTIC_MAX } from "euclid-ndk";
+
+await emo.createAlertRule("worker-load", "node.load", {
+  labels: { node: "worker-01" },   // empty watches every series of the metric
+  statistic: STATISTIC_MAX,        // the highest reading in the step, not the mean
+  comparison: COMPARISON_ABOVE,
+  warning: 4,
+  critical: 8,
+  forPeriods: 3,                   // three consecutive breaches before it fires
+  description: "see runbook/node-load",
+});
+```
+
+At least one of `warning` and `critical` is required, and given both they have to be the right way round
+for the comparison - a rule whose levels crossed would fire critical before warning. `forPeriods` is what
+keeps one bad reading from waking anybody, and `clearPeriods` the same on the way back. A rule only ever
+judges `RAW`: one on the hourly or daily rollup would be judging a figure computed long after the fact,
+which is a report rather than an alert, and the server refuses it.
+
+**`null` is not zero** on a threshold. A rule carries one, the other or both, and `null` means "not this
+one" - a rule alerting above 0 is a different thing from a rule with no warning level. On an update,
+`null` *removes* a threshold where leaving the field out keeps it, which is the one place absent and null
+differ.
+
+`listAlerts` says where every watched **series** stands, not every rule: a rule with no labels watches
+each series of its metric separately. `since` is when a series entered its state, which tells an alert
+that has been firing for an hour from one that fired a moment ago, and `severity` is the server's own
+ordering of the states - worth sorting on rather than deriving, so a client and the server agree about
+what is worse. `active: true` leaves out the series that are `OK`, which is what a status page wants.
+`NODATA` is its own state: a series that stopped reporting is a different problem from one reporting a
+figure nobody minds.
+
+`listAlertHistory` is the shape of an incident rather than a graph - one entry per move between states,
+with the reading and the threshold that caused it. `threshold` is `null` for a move no threshold caused,
+such as a series going quiet.
+
+### Dashboards and the catalog
+
+`saveDashboard` stores a layout under a name for the session's user, and the layout is **opaque** to
+euclid and to this SDK: whatever object goes in comes back. `listDashboards` answers names and dates
+without the panels, because a picker needs the names and sending every panel of every dashboard to draw
+one list would not. Re-saving keeps the original `created`, so an edited dashboard does not read as new.
+
+`listMetricCatalog` answers what metrics exist rather than what they read: one entry per name, with how
+many series it has, which labels those are made of, and when it was last written. That series count is
+the number to watch - every series is its own stored row per step, forever, so a label carrying a request
+ID shows up here as a metric with thousands of them.
 
 A row's `value` is the mean for a gauge and the sum for a rate - `type` says which, in upper case, where a push
 spells it in lower - and `minValue`/`maxValue` survive a rollup, so an hourly row still knows the worst five

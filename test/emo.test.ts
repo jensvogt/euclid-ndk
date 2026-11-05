@@ -14,10 +14,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
 import {
+  ALERT_CRITICAL,
+  COMPARISON_ABOVE,
   Euclid,
   gaugeMetric,
   rateMetric,
   RESOLUTION_HOUR,
+  STATISTIC_MAX,
   type EuclidEmo,
   type EuclidSession,
   type MeterRegistry,
@@ -168,6 +171,259 @@ describe("reading metrics", () => {
 });
 
 // -- the registry ----------------------------------------------------------------------------------
+
+describe("the metric catalog", () => {
+  it("says what metrics exist and how many series each has", async () => {
+    gateway.answer("emo", "list-metrics", {
+      total: 2,
+      items: [
+        {
+          name: "invoice.parse",
+          type: "GAUGE",
+          series: 4,
+          labelNames: ["host", "outcome"],
+          lastSeen: "2026-11-05T09:00:00Z",
+        },
+        { name: "invoices.parsed", type: "RATE", series: 1 },
+      ],
+    });
+
+    const catalog = await emo.listMetricCatalog({ hours: 24, prefix: "invoice" });
+
+    assert.deepEqual(gateway.last().json(), { hours: 24, prefix: "invoice" });
+    assert.equal(catalog.total, 2);
+    // The series count is the figure worth watching: each one is its own stored row per step, forever.
+    assert.deepEqual([catalog.items[0]?.series, catalog.items[1]?.series], [4, 1]);
+    assert.deepEqual(catalog.items[0]?.labelNames, ["host", "outcome"]);
+    assert.deepEqual(catalog.items[1]?.labelNames, []);
+  });
+
+  it("narrows by nothing when it was given nothing", async () => {
+    gateway.answer("emo", "list-metrics", { total: 0, items: [] });
+
+    await emo.listMetricCatalog();
+
+    assert.deepEqual(gateway.last().json(), {});
+  });
+});
+
+describe("alert rules", () => {
+  const RULE = {
+    ruleId: "worker-load",
+    name: "node.load",
+    labels: { node: "worker-01" },
+    resolution: "RAW",
+    statistic: "max",
+    comparison: "above",
+    warning: 4,
+    critical: 8,
+    forPeriods: 3,
+    clearPeriods: 2,
+    noDataAfterPeriods: 5,
+    enabled: true,
+    description: "see runbook/node-load",
+    accountId: "000000000000",
+    namespace: "",
+    created: "2026-11-01",
+    modified: "2026-11-05",
+  };
+
+  it("creates a rule with both thresholds", async () => {
+    gateway.answer("emo", "create-alert-rule", RULE);
+
+    const rule = await emo.createAlertRule("worker-load", "node.load", {
+      labels: { node: "worker-01" },
+      statistic: STATISTIC_MAX,
+      comparison: COMPARISON_ABOVE,
+      warning: 4,
+      critical: 8,
+      forPeriods: 3,
+      description: "see runbook/node-load",
+    });
+
+    assert.deepEqual(gateway.last().json(), {
+      ruleId: "worker-load",
+      name: "node.load",
+      labels: { node: "worker-01" },
+      statistic: "max",
+      comparison: "above",
+      warning: 4,
+      critical: 8,
+      forPeriods: 3,
+      description: "see runbook/node-load",
+    });
+    assert.deepEqual([rule.warning, rule.critical], [4, 8]);
+    // Always RAW: a rule on a rollup would judge a figure computed long after the fact.
+    assert.equal(rule.resolution, "RAW");
+  });
+
+  it("tells a threshold that was removed from one that was not mentioned", async () => {
+    gateway.answer("emo", "update-alert-rule", { ...RULE, warning: null });
+
+    // null is sent, because that is how the server is told to remove a threshold...
+    const updated = await emo.updateAlertRule("worker-load", { warning: null });
+    assert.deepEqual(gateway.last().json(), { ruleId: "worker-load", warning: null });
+    // ...and it reads back as null rather than as zero, which is a threshold somebody may have set.
+    assert.equal(updated.warning, null);
+    assert.equal(updated.critical, 8);
+
+    // ...while a field left out is not in the request at all.
+    gateway.answer("emo", "update-alert-rule", RULE);
+    await emo.updateAlertRule("worker-load", { enabled: false });
+    assert.deepEqual(gateway.last().json(), { ruleId: "worker-load", enabled: false });
+  });
+
+  it("leaves crossed thresholds to the server to refuse", async () => {
+    // A rule whose levels crossed would fire critical before warning, which no reader would expect.
+    gateway.answer(
+      "emo",
+      "create-alert-rule",
+      { error: '"warning" must be below "critical" for a rule alerting above them' },
+      400,
+    );
+
+    await assert.rejects(
+      () => emo.createAlertRule("bad", "node.load", { comparison: COMPARISON_ABOVE, warning: 9, critical: 4 }),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["create-alert-rule", 400]);
+        return true;
+      },
+    );
+  });
+
+  it("lists and deletes rules", async () => {
+    gateway.answer("emo", "list-alert-rules", { items: [RULE] });
+    gateway.answer("emo", "delete-alert-rule", {});
+
+    assert.deepEqual((await emo.listAlertRules()).map((rule) => rule.ruleId), ["worker-load"]);
+    assert.deepEqual(gateway.last().json(), {});
+
+    await emo.listAlertRules("worker-load");
+    assert.deepEqual(gateway.last().json(), { ruleId: "worker-load" });
+
+    await emo.deleteAlertRule("worker-load");
+    assert.deepEqual(gateway.last().json(), { ruleId: "worker-load" });
+  });
+
+  it("reads a rule that says nothing about being enabled as enabled", async () => {
+    gateway.answer("emo", "list-alert-rules", { items: [{ ruleId: "r", name: "node.load" }] });
+
+    assert.equal((await emo.listAlertRules())[0]?.enabled, true);
+  });
+});
+
+describe("alerts", () => {
+  it("says where each watched series stands", async () => {
+    gateway.answer("emo", "list-alerts", {
+      items: [
+        {
+          ruleId: "worker-load",
+          name: "node.load",
+          labels: { node: "worker-01" },
+          state: "CRITICAL",
+          severity: 3,
+          since: "2026-11-05T08:30:00Z",
+          value: 11.5,
+          lastSeen: "2026-11-05T09:00:00Z",
+          statistic: "max",
+          comparison: "above",
+          warning: 4,
+          critical: 8,
+          description: "see runbook/node-load",
+        },
+      ],
+    });
+
+    const alerts = await emo.listAlerts({ active: true });
+
+    assert.deepEqual(gateway.last().json(), { active: true });
+    assert.equal(alerts[0]?.state, ALERT_CRITICAL);
+    // Since is when the series entered this state, which is what tells an hour-old alert from a new one.
+    assert.deepEqual([alerts[0]?.since, alerts[0]?.value], ["2026-11-05T08:30:00Z", 11.5]);
+    // The server's own ordering of the states, worth sorting on rather than deriving.
+    assert.equal(alerts[0]?.severity, 3);
+  });
+
+  it("reads the history, with a null threshold for a move no threshold caused", async () => {
+    gateway.answer("emo", "list-alert-history", {
+      items: [
+        {
+          ruleId: "worker-load",
+          name: "node.load",
+          previous: "CRITICAL",
+          state: "NODATA",
+          severity: 1,
+          value: 0,
+          statistic: "max",
+          reason: "no readings for 5 periods",
+          timestamp: "2026-11-05T09:10:00Z",
+        },
+      ],
+    });
+
+    const history = await emo.listAlertHistory({ ruleId: "worker-load", limit: 50, since: "2026-11-05T00:00:00Z" });
+
+    // since and until here, from and to on the wire - the same pair a metric query maps.
+    assert.deepEqual(gateway.last().json(), {
+      ruleId: "worker-load",
+      limit: 50,
+      from: "2026-11-05T00:00:00Z",
+    });
+    assert.deepEqual([history[0]?.previous, history[0]?.state], ["CRITICAL", "NODATA"]);
+    // A series going quiet crossed nothing, so there is no threshold to report.
+    assert.equal(history[0]?.threshold, null);
+    assert.equal(history[0]?.reason, "no readings for 5 periods");
+  });
+});
+
+describe("dashboards", () => {
+  it("stores a layout as it was given and hands it back", async () => {
+    const layout = { panels: [{ metric: "node.load", kind: "line" }], columns: 2 };
+    gateway.answer("emo", "save-dashboard", { name: "fleet", userId: "jens", modified: "2026-11-05T09:00:00Z" });
+    gateway.answer("emo", "get-dashboard", {
+      name: "fleet",
+      dashboard: layout,
+      created: "2026-11-01",
+      modified: "2026-11-05T09:00:00Z",
+    });
+
+    const saved = await emo.saveDashboard("fleet", layout);
+    assert.deepEqual(gateway.last().json(), { name: "fleet", dashboard: layout });
+    assert.deepEqual([saved.name, saved.userId], ["fleet", "jens"]);
+
+    // Opaque to euclid and to this SDK: whatever went in is what comes back.
+    const read = await emo.getDashboard("fleet");
+    assert.deepEqual(read.dashboard, layout);
+    assert.equal(read.created, "2026-11-01");
+  });
+
+  it("lists names without panels, and deletes one", async () => {
+    gateway.answer("emo", "list-dashboards", {
+      userId: "jens",
+      items: [{ name: "fleet", created: "2026-11-01", modified: "2026-11-05" }],
+    });
+    gateway.answer("emo", "delete-dashboard", {});
+
+    // A picker needs the names; sending every panel of every dashboard to draw one list would not.
+    const listed = await emo.listDashboards();
+    assert.deepEqual(listed.map((dashboard) => dashboard.name), ["fleet"]);
+
+    await emo.deleteDashboard("fleet");
+    assert.deepEqual(gateway.last().json(), { name: "fleet" });
+  });
+
+  it("rejects a dashboard this user has not saved", async () => {
+    gateway.answer("emo", "get-dashboard", { error: "No dashboard called 'nobodys'" }, 404);
+
+    await assert.rejects(
+      () => emo.getDashboard("nobodys"),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["get-dashboard", 404]);
+        return true;
+      },
+    );
+  });
+});
 
 describe("the meter registry", () => {
   it("reports a counter as a rate and starts it again", async () => {

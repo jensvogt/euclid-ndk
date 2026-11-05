@@ -36,14 +36,124 @@ import {
   type MetricQuery,
   type MetricSample,
 } from "../dto/emo.js";
+import {
+  toAlert,
+  toAlertRule,
+  toAlertTransition,
+  toDashboard,
+  toDashboardSummary,
+  toMetricCatalog,
+  toSavedDashboard,
+  type Alert,
+  type AlertRule,
+  type AlertTransition,
+  type Dashboard,
+  type DashboardSummary,
+  type MetricCatalog,
+  type SavedDashboard,
+} from "../dto/emo.js";
 import { documents } from "../dto/json.js";
 import { ModuleClient } from "./base.js";
 import type { EuclidSession } from "./eam.js";
 
 export const TARGET = "emo";
 
+/**
+ * Which of a stored row's three figures an alert rule judges.
+ *
+ * A row covers a step, so it holds the mean, the lowest and the highest reading in it.
+ * {@link STATISTIC_VALUE} judges the mean - the ordinary choice - while {@link STATISTIC_MAX} catches a
+ * spike a mean would have smoothed away, which for a latency or a queue depth is usually the point.
+ */
+export const STATISTIC_VALUE = "value";
+export const STATISTIC_MAX = "max";
+export const STATISTIC_MIN = "min";
+
+/** Which side of a threshold is the wrong one. */
+export const COMPARISON_ABOVE = "above";
+export const COMPARISON_BELOW = "below";
+
+/**
+ * Where one series stands against its rule.
+ *
+ * {@link ALERT_NODATA} is its own state rather than an absence of one: a series that stopped reporting
+ * is a different problem from one reporting a figure nobody minds, and only a rule with a
+ * `noDataAfterPeriods` of its own ever reaches it.
+ */
+export const ALERT_OK = "OK";
+export const ALERT_WARNING = "WARNING";
+export const ALERT_CRITICAL = "CRITICAL";
+export const ALERT_NODATA = "NODATA";
+
 /** How long a step is unless one is given, in milliseconds - the minute euclid-jdk's registry defaults to. */
 export const DEFAULT_STEP_MS = 60_000;
+
+/** How far back a catalog looks, and which names it keeps. */
+export interface MetricCatalogOptions {
+  /** How many hours back to count series over; at least 1, and the server's own default otherwise. */
+  hours?: number;
+  /** Only the metrics whose name starts with this. */
+  prefix?: string;
+}
+
+/**
+ * Everything an alert rule says beyond the metric it judges.
+ *
+ * At least one of `warning` and `critical` is required. Given both, they have to be the right way round
+ * for `comparison`, since a rule whose levels crossed would fire critical before warning.
+ */
+export interface AlertRuleOptions {
+  /** The series to narrow to; empty watches every series of the metric. */
+  labels?: Record<string, string>;
+  /** {@link STATISTIC_VALUE} - the mean - or {@link STATISTIC_MAX}, or {@link STATISTIC_MIN}. */
+  statistic?: string;
+  /** {@link COMPARISON_ABOVE} or {@link COMPARISON_BELOW}. */
+  comparison?: string;
+  /** The level that warns, or `null` for a rule that only ever goes critical. */
+  warning?: number | null;
+  /** The level that is critical, or `null` for a rule that only ever warns. */
+  critical?: number | null;
+  /** Consecutive breaching periods before it fires; 1 to 1000. */
+  forPeriods?: number;
+  /** Consecutive clear periods before it clears; 1 to 1000. */
+  clearPeriods?: number;
+  /** Silent periods before a series counts as {@link ALERT_NODATA}; 0 to 1000, and 0 never raises it. */
+  noDataAfterPeriods?: number;
+  /** False parks the rule without deleting it, which keeps its history addressable. */
+  enabled?: boolean;
+  /** What a reader of the alert should know - which runbook, which team. */
+  description?: string;
+}
+
+/**
+ * What an update changes, and only what it names.
+ *
+ * `name` is here because a rule can be pointed at another metric. A threshold set to `null` is
+ * *removed*, where leaving it out keeps what is stored - which is the one field where absent and null
+ * mean different things.
+ */
+export interface AlertRuleChanges extends AlertRuleOptions {
+  name?: string;
+}
+
+/** Which alerts to list. Naming nothing lists every watched series, whatever state it is in. */
+export interface ListAlertsOptions {
+  ruleId?: string;
+  /** One state - {@link ALERT_CRITICAL} and its siblings. */
+  state?: string;
+  /** True leaves out the series that are `OK`, which is what a status page asks for. */
+  active?: boolean;
+}
+
+/** Which transitions to list, and how far back. */
+export interface AlertHistoryOptions {
+  ruleId?: string;
+  /** How many transitions, newest first; the server's own default is 100. */
+  limit?: number;
+  /** The window, as ISO 8601 instants. */
+  since?: string;
+  until?: string;
+}
 
 /** What a registry is built with beyond the name it reports under. */
 export interface RegistryOptions {
@@ -60,6 +170,28 @@ export interface RegistryOptions {
   commonLabels?: Record<string, unknown>;
   /** Whether closing publishes the step in hand rather than dropping it. */
   publishOnClose?: boolean;
+}
+
+/**
+ * A rule's fields as a request body, carrying only what was given.
+ *
+ * A threshold is the exception to "absent means unchanged": `null` is sent, because that is how the
+ * server is told to remove one, and only `undefined` is left out.
+ */
+function rulePayload(options: AlertRuleChanges): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (options.name !== undefined) payload["name"] = options.name;
+  if (options.labels !== undefined) payload["labels"] = { ...options.labels };
+  if (options.statistic !== undefined) payload["statistic"] = options.statistic;
+  if (options.comparison !== undefined) payload["comparison"] = options.comparison;
+  if (options.warning !== undefined) payload["warning"] = options.warning;
+  if (options.critical !== undefined) payload["critical"] = options.critical;
+  if (options.forPeriods !== undefined) payload["forPeriods"] = options.forPeriods;
+  if (options.clearPeriods !== undefined) payload["clearPeriods"] = options.clearPeriods;
+  if (options.noDataAfterPeriods !== undefined) payload["noDataAfterPeriods"] = options.noDataAfterPeriods;
+  if (options.enabled !== undefined) payload["enabled"] = options.enabled;
+  if (options.description !== undefined) payload["description"] = options.description;
+  return payload;
 }
 
 /**
@@ -111,6 +243,159 @@ export class EuclidEmo extends ModuleClient {
   async average(query: MetricQuery = {}): Promise<number> {
     const value = (await this.call("average", metricQueryToJson(query)))["average"];
     return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  }
+
+  /**
+   * What metrics exist, rather than what they currently read.
+   *
+   * The catalog: one entry per metric name, with how many series it has, which labels those are made of,
+   * and when it was last written to. That series count is the figure worth watching - every series is its
+   * own stored row per step, forever, so a label carrying a request id shows up here as a metric with
+   * thousands of them.
+   *
+   * Administrator-only, as {@link listMetrics} and {@link average} are.
+   *
+   * @param options how far back to look, and a name prefix to narrow to
+   */
+  async listMetricCatalog(options: MetricCatalogOptions = {}): Promise<MetricCatalog> {
+    const payload: Record<string, unknown> = {};
+    if (options.hours !== undefined) payload["hours"] = options.hours;
+    if (options.prefix) payload["prefix"] = options.prefix;
+    return toMetricCatalog(await this.call("list-metrics", payload));
+  }
+
+  // -- alert rules -----------------------------------------------------------------------------
+
+  /**
+   * Defines a threshold rule on one metric.
+   *
+   * At least one of `warning` and `critical` is required, and when both are given they have to be the
+   * right way round for the comparison: warning below critical for a rule alerting `ABOVE`, above it for
+   * one alerting `BELOW`. A rule whose levels crossed would fire critical before warning, which no
+   * reader would expect.
+   *
+   * `forPeriods` is what keeps a single bad reading from waking anybody: the rule fires only once that
+   * many consecutive periods have breached, and clears only after `clearPeriods` have not. Both are
+   * counted in steps of the raw tier.
+   *
+   * A rule only ever judges the raw tier. One on the hourly or daily rollup would be judging a figure
+   * computed long after the fact, which is a report rather than an alert, and the server refuses it.
+   *
+   * @param ruleId the rule's own name, unique in the account: letters, digits, `-`, `_` and `.`
+   * @param name the metric it judges
+   * @param options the thresholds and everything else about it
+   */
+  async createAlertRule(ruleId: string, name: string, options: AlertRuleOptions): Promise<AlertRule> {
+    return toAlertRule(await this.call("create-alert-rule", { ruleId, name, ...rulePayload(options) }));
+  }
+
+  /**
+   * Changes a rule, and only what `changes` names.
+   *
+   * The distinction the server draws is between a field being sent and not being sent. A threshold is
+   * the one that needs care: `null` *removes* it - which is how a rule goes from having both levels to
+   * one - where leaving it out keeps what is stored. The pair is validated as it will stand, so removing
+   * one and raising the other in a single call is checked once, against the result.
+   *
+   * `enabled: false` is how a rule is parked rather than deleted, which keeps its history addressable.
+   */
+  async updateAlertRule(ruleId: string, changes: AlertRuleChanges = {}): Promise<AlertRule> {
+    return toAlertRule(await this.call("update-alert-rule", { ruleId, ...rulePayload(changes) }));
+  }
+
+  /** Removes a rule. Its history stays, and is still listed by {@link listAlertHistory}. */
+  async deleteAlertRule(ruleId: string): Promise<void> {
+    await this.call("delete-alert-rule", { ruleId });
+  }
+
+  /**
+   * The alert rules of this account, or one of them.
+   *
+   * A list rather than a page: an installation has tens of rules, and the server answers with all of
+   * them at once.
+   *
+   * @param ruleId one rule by name; empty lists every rule
+   */
+  async listAlertRules(ruleId = ""): Promise<AlertRule[]> {
+    const payload: Record<string, unknown> = {};
+    if (ruleId) payload["ruleId"] = ruleId;
+    return documents(await this.call("list-alert-rules", payload), "items").map(toAlertRule);
+  }
+
+  // -- alerts ----------------------------------------------------------------------------------
+
+  /**
+   * Where every watched series stands against its rule, now.
+   *
+   * One entry per *series* rather than per rule: a rule with no labels watches every series of its
+   * metric, and each of those is judged on its own. `since` is when a series entered the state it is in,
+   * which is what tells an alert that has been firing for an hour from one that fired a moment ago, and
+   * `severity` is the server's own ordering of the states - worth sorting on rather than deriving, so
+   * that a client and the server agree about what is worse.
+   *
+   * @param options narrow to one rule, to one state, or to the series that are not `OK`
+   */
+  async listAlerts(options: ListAlertsOptions = {}): Promise<Alert[]> {
+    const payload: Record<string, unknown> = {};
+    if (options.ruleId) payload["ruleId"] = options.ruleId;
+    if (options.state) payload["state"] = options.state;
+    if (options.active !== undefined) payload["active"] = options.active;
+    return documents(await this.call("list-alerts", payload), "items").map(toAlert);
+  }
+
+  /**
+   * What changed state, and when.
+   *
+   * Every move from one state to another, newest first, with the reading and the threshold that caused
+   * it. `threshold` is `null` for a transition no threshold caused - a series going quiet into `NODATA`,
+   * or coming back from it.
+   *
+   * Kept per transition rather than per reading, so this is the shape of an incident rather than a graph:
+   * a series flapping between warning and critical shows up as the moves it made.
+   */
+  async listAlertHistory(options: AlertHistoryOptions = {}): Promise<AlertTransition[]> {
+    const payload: Record<string, unknown> = {};
+    if (options.ruleId) payload["ruleId"] = options.ruleId;
+    if (options.limit !== undefined) payload["limit"] = options.limit;
+    // `from` and `to` on the wire, `since` and `until` here - the same pair metricQueryToJson maps.
+    if (options.since) payload["from"] = options.since;
+    if (options.until) payload["to"] = options.until;
+    return documents(await this.call("list-alert-history", payload), "items").map(toAlertTransition);
+  }
+
+  // -- dashboards ------------------------------------------------------------------------------
+
+  /**
+   * Saves a dashboard layout under a name, for this session's user.
+   *
+   * The layout is opaque to euclid and to this SDK: whatever object is passed is stored as one JSON
+   * object and comes back as it went in. Nothing here reads a panel.
+   *
+   * Saving over a name replaces the layout and keeps the original `created`, so a dashboard that has
+   * been edited does not read as new.
+   */
+  async saveDashboard(name: string, dashboard: Record<string, unknown>): Promise<SavedDashboard> {
+    return toSavedDashboard(await this.call("save-dashboard", { name, dashboard }));
+  }
+
+  /** One of this user's dashboards, with its panels. HTTP 404 for a name they have not saved. */
+  async getDashboard(name: string): Promise<Dashboard> {
+    return toDashboard(await this.call("get-dashboard", { name }));
+  }
+
+  /**
+   * The names of this user's dashboards, without their panels.
+   *
+   * Names and dates only, deliberately: a picker needs the names, and sending every panel of every
+   * dashboard to draw one list is a waste of a wire.
+   */
+  async listDashboards(): Promise<DashboardSummary[]> {
+    return documents(await this.call("list-dashboards"), "items").map(toDashboardSummary);
+  }
+
+  /** Removes one of this user's dashboards. HTTP 404 for a name they have not saved. */
+  async deleteDashboard(name: string): Promise<void> {
+    await this.call("delete-dashboard", { name });
   }
 
   /**
@@ -482,11 +767,11 @@ function keyOf(name: string, labels: Record<string, string>): string {
     .sort()
     .map((label) => `${label}=${labels[label]}`)
     .join(",");
-  return `${name} ${sorted}`;
+  return `${name}\0${sorted}`;
 }
 
 function nameOf(key: string): string {
-  return key.slice(0, key.indexOf(" "));
+  return key.slice(0, key.indexOf("\0"));
 }
 
 function meterOf<T>(
