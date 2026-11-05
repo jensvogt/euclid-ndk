@@ -743,7 +743,11 @@ while `scan` reads the table, which is right for an export and wrong for a looku
 | --- | --- |
 | `createApplication`, `updateApplication`, `copyApplication`, `redeployApplication`, `deleteApplication` | deploying |
 | `startApplication`, `stopApplication`, `restartApplication`, `scaleApplication`, `listApplications`, `getApplication` | running |
-| `applyInfrastructure` | making the installation match the application's own declaration |
+| `applyInfrastructure`, `planInfrastructure` | making the installation match the application's own declaration, or seeing what that would do |
+| `listPlatforms`, `getPlatform`, `applyPlatform`, `planPlatform` | the shared infrastructure nobody's application owns |
+| `setApplicationLimits`, `rebalanceApplication` | what one instance may use, and placing a pool again |
+| `listEgressSites`, `setEgressLimit`, `deleteEgressLimit`, `deleteEgressSite` | how hard an application may call a site |
+| `acquireEgressPermit`, `releaseEgressPermit`, `reportEgressThrottled` | an application asking before it calls one |
 | `setLogLevel`, `resetLogLevel` | what one application logs, without restarting it |
 | `reportLoad` | an application telling euclid how busy it is, which is what the autoscaler acts on |
 | `listNodes`, `getNode`, `drainNode`, `resumeNode`, `deleteNode` | the worker nodes applications are placed on |
@@ -903,6 +907,69 @@ This is not a metric. Push the same numbers to `session.emo().pushMetrics` as we
 that path aggregates into five-minute buckets, which is right for a graph and five minutes too slow for a
 control loop.
 
+### Limits and placement
+
+`setApplicationLimits` sets what one *instance* may use: `memoryLimitMb` and `cpuLimit`, where zero
+removes a limit and a field left out stays as it is. A memory limit is **admitted against the account's
+nodes** - the server adds up what every running application has committed and refuses with 409 a limit
+the fleet could not keep, rather than letting it be found out when an instance has nowhere to be placed.
+`node.memoryMb` is what it measures against: what a node offers applications, which is less than the
+machine's memory.
+
+`rebalanceApplication` is to a changed *fleet* what `restartApplication` is to a changed definition. A
+node that was added, drained or relabelled leaves a pool sitting where it was placed, since nothing moves
+an instance that is running happily; this cycles them so the manager chooses again, one per reconcile
+tick.
+
+### Egress
+
+An application that calls the outside world can ask first:
+
+```ts
+const permit = await eap.acquireEgressPermit(applicationId, "downloads.example.com");
+if (!permit.granted) await delay(permit.retryAfterMs);   // a refusal is an answer, not an error
+else
+  try {
+    await fetch("https://downloads.example.com/...");
+  } finally {
+    await eap.releaseEgressPermit(applicationId, "downloads.example.com", permit.permitId);
+  }
+```
+
+**`granted: false` comes back 200**, with `reason` - which limit stood in the way - and `retryAfterMs`.
+That is what makes this a rate limiter rather than a failure, and a caller that treats a refusal as an
+exception has turned a queue into an outage. A granted permit has a lease and expires on its own, so an
+application that dies holding one does not hold it forever; releasing it early is what frees the slot for
+the next call. `released: false` is not a failure either - it means the lease had already run out.
+
+`reportEgressThrottled` is what to do with a 429: the site is blocked for the period given and every
+permit for it is refused until then, **including the ones other instances of the same application would
+have taken**, which is the point of reporting it centrally rather than backing off alone.
+
+Operators set the limits with `setEgressLimit`, per site or - with `EVERY_EGRESS_SITE` - as the
+application's own default. `burst` above `requestsPerSecond` lets an application that has been quiet spend
+a backlog at once; `concurrent` caps how many permits may be out whatever the rate. `listEgressSites`
+shows each site's limits and `limitsSet` says whether they are its own or inherited, with `tokens`,
+`inFlight` and `blockedUntil` as of *now* rather than as of the last write. `deleteEgressLimit` leaves the
+site and takes away its limits, so it inherits again; `deleteEgressSite` forgets it entirely.
+
+### Platforms
+
+A platform is the shared infrastructure nobody's application owns - the queues, topics and buckets several
+applications use, declared in one place instead of claimed by whichever happened to be deployed first.
+Applications then reach its objects through their own declaration's `uses`.
+
+```ts
+const planned = await eap.planPlatform(declaration);     // what it would do
+const applied = await eap.applyPlatform(declaration, { name: "shared" });
+```
+
+It goes through the same engine an application's declaration does, with three differences: the declaration
+is handed over rather than read from beside an artifact, since a platform has none; it only ever *owns*,
+because there is no principal to grant to, so a declaration with `uses` is refused; and what it creates is
+recorded against the platform. A declaration naming an `applicationId` is refused too - that folder is
+that application's.
+
 ### Infrastructure declarations
 
 An application can carry its own infrastructure: a `<applicationId>.euclid.json` file stored beside its
@@ -916,6 +983,18 @@ const applied = await eap.applyInfrastructure("order-service");
 if (!applied.declared) console.log("no declaration stored - nothing to reconcile");
 for (const gone of applied.deleted) console.log(`removed ${gone}`);
 ```
+
+`planInfrastructure` is the dry run, and the call to make first: `deleted` is what a reconcile would
+remove with everything in it, and `kept` is what it would leave behind and why - a queue with messages on
+it, a bucket holding objects. It can also plan against a declaration that has not been stored yet, which
+is how a folder is checked before it is uploaded. It is a separate action rather than a `dryRun` flag
+deliberately: an older euclid ignores a field it does not know, so a flag sent to one would be applied for
+real, removals included, where an action it does not know it refuses.
+
+`prune: false` keeps what the declaration no longer names, turning a full reconcile into one that only
+adds. `adopted` is the fourth outcome beside created, updated and deleted: a resource the declaration
+names that already existed and is now recorded as this application's - nothing was made, and what was
+there is untouched.
 
 Three things to know before trusting one:
 

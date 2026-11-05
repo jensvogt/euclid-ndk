@@ -41,6 +41,16 @@
 import {
   toApplication,
   toDeleteNodeResult,
+  toEgressLimitResult,
+  toEgressPermit,
+  toEgressRelease,
+  toEgressSiteListing,
+  toEgressSiteRemoved,
+  toEgressThrottled,
+  toPlatform,
+  toPlatformResult,
+  toPlatforms,
+  toRebalanceResult,
   toDrainNodeResult,
   toInfrastructureResult,
   toLoadReport,
@@ -50,6 +60,16 @@ import {
   toWorkerNodes,
   type Application,
   type DeleteNodeResult,
+  type EgressLimitResult,
+  type EgressLimits,
+  type EgressPermit,
+  type EgressRelease,
+  type EgressSiteListing,
+  type EgressSiteRemoved,
+  type EgressThrottled,
+  type Platform,
+  type PlatformResult,
+  type RebalanceResult,
   type DrainNodeResult,
   type InfrastructureResult,
   type LoadReport,
@@ -192,6 +212,52 @@ export interface ScaleApplicationBounds {
   maxInstances?: number;
 }
 
+/** Whatever a site nobody has configured falls back to: an application's own default, for every site. */
+export const EVERY_EGRESS_SITE = "*";
+
+/** What a reconcile does with what a declaration no longer names. */
+export interface ApplyInfrastructureOptions {
+  /**
+   * Remove an owned resource the declaration no longer names, when it is empty. On by default, which
+   * is what makes a reconcile full - `false` keeps everything and only adds.
+   */
+  prune?: boolean;
+}
+
+/** The same, plus the declaration a plan may be run against. */
+export interface PlanInfrastructureOptions extends ApplyInfrastructureOptions {
+  /**
+   * A declaration to plan with instead of the one stored beside the artifact - what shows what a folder
+   * *would* do before it is uploaded.
+   *
+   * Only a plan takes one. Applied for real it would be undone by the next deploy, which applies the
+   * stored declaration, so the server refuses it on {@link EuclidEap.applyInfrastructure}.
+   */
+  declaration?: Record<string, unknown>;
+}
+
+/** What platform a declaration is applied as, and what to do with what it no longer names. */
+export interface PlatformOptions extends ApplyInfrastructureOptions {
+  /** The platform's name; the server's own default is `"platform"`. */
+  name?: string;
+}
+
+/**
+ * What one instance of an application may use. A limit left out stays as it is; **zero removes one**,
+ * and giving neither is refused rather than treated as a request that changes nothing.
+ */
+export interface ApplicationLimits {
+  /** Memory per instance, in MiB. Admitted against the account's nodes when it is raised. */
+  memoryLimitMb?: number;
+  /** CPUs per instance, as a fraction - `1.5` is a CPU and a half. */
+  cpuLimit?: number;
+}
+
+/** How long a permit is held before it expires on its own. */
+export interface EgressPermitOptions {
+  leaseSeconds?: number;
+}
+
 /** Everything a load report says beyond how busy the instance is. */
 export interface ReportLoadOptions {
   /** How much work is waiting that this instance has not started. */
@@ -279,6 +345,14 @@ const UPDATABLE = [
   "schedule",
   "namespace",
 ] as const satisfies readonly (keyof UpdateApplicationChanges)[];
+
+/** A platform declaration as a request body: the declaration, the name, and what to prune. */
+function platformPayload(declaration: Record<string, unknown>, options: PlatformOptions): Record<string, unknown> {
+  const payload: Record<string, unknown> = { declaration };
+  if (options.name) payload["name"] = options.name;
+  if (options.prune !== undefined) payload["prune"] = options.prune;
+  return payload;
+}
 
 /**
  * EAP's operations, on the credentials of the session that created it.
@@ -498,8 +572,232 @@ export class EuclidEap extends ModuleClient {
    * declaration that cannot be applied rejects: one that names a resource belonging to another application, or
    * claims one it does not own, throws rather than being partly applied.
    */
-  async applyInfrastructure(applicationId: string): Promise<InfrastructureResult> {
-    return toInfrastructureResult(await this.call("apply-infrastructure", { applicationId }));
+  async applyInfrastructure(applicationId: string, options: ApplyInfrastructureOptions = {}): Promise<InfrastructureResult> {
+    const payload: Record<string, unknown> = { applicationId };
+    if (options.prune !== undefined) payload["prune"] = options.prune;
+    return toInfrastructureResult(await this.call("apply-infrastructure", payload));
+  }
+
+  /**
+   * Works out what {@link applyInfrastructure} would do, and changes nothing.
+   *
+   * Read `deleted` and `kept` before applying: the first is what a reconcile would remove, with
+   * everything in it, and the second is what it would leave behind and why - a queue with messages on
+   * it, a bucket holding objects. Those two lists are the reason this call exists.
+   *
+   * A separate action rather than a `dryRun` flag on apply, deliberately: an older euclid ignores a
+   * field it does not know, so `dryRun: true` sent to one would be applied for real, removals included.
+   * An *action* it does not know it refuses, which is the failure to want.
+   *
+   * @param applicationId the application to plan for
+   * @param options a declaration to plan with instead of the stored one, and whether to prune
+   */
+  async planInfrastructure(applicationId: string, options: PlanInfrastructureOptions = {}): Promise<InfrastructureResult> {
+    const payload: Record<string, unknown> = { applicationId };
+    if (options.prune !== undefined) payload["prune"] = options.prune;
+    if (options.declaration !== undefined) payload["declaration"] = options.declaration;
+    return toInfrastructureResult(await this.call("plan-infrastructure", payload));
+  }
+
+  // -- platforms -------------------------------------------------------------------------------
+
+  /**
+   * The platforms of this namespace.
+   *
+   * A platform is the shared infrastructure nobody's application owns - the queues and buckets several
+   * applications use, declared in one place rather than claimed by whichever happened to be deployed
+   * first. Applications then reach its objects through their own declaration's `uses`.
+   */
+  async listPlatforms(): Promise<Platform[]> {
+    return toPlatforms(await this.call("list-platforms"));
+  }
+
+  /**
+   * One platform, with what it owns and the declaration it was applied from.
+   *
+   * @param name the platform's name; `"platform"` - the server's own default - unless an installation
+   *   keeps several
+   */
+  async getPlatform(name = ""): Promise<Platform> {
+    const payload: Record<string, unknown> = {};
+    if (name) payload["name"] = name;
+    return toPlatform(await this.call("get-platform", payload));
+  }
+
+  /**
+   * Makes the namespace match a platform declaration.
+   *
+   * The same engine an application's declaration goes through, with three differences: the declaration
+   * is handed over rather than read from beside an artifact, since a platform has none; it only ever
+   * *owns*, since there is no principal to grant anything to - a declaration with `uses` is refused;
+   * and what it creates is recorded against the platform rather than an application.
+   *
+   * A declaration naming an `applicationId` is refused too: that folder is that application's, and
+   * applying it here would record its objects against the wrong owner.
+   *
+   * As destructive as an application's apply. Run {@link planPlatform} first.
+   */
+  async applyPlatform(declaration: Record<string, unknown>, options: PlatformOptions = {}): Promise<PlatformResult> {
+    return toPlatformResult(await this.call("apply-platform", platformPayload(declaration, options)));
+  }
+
+  /** What {@link applyPlatform} would do, changing nothing - see {@link planInfrastructure}. */
+  async planPlatform(declaration: Record<string, unknown>, options: PlatformOptions = {}): Promise<PlatformResult> {
+    return toPlatformResult(await this.call("plan-platform", platformPayload(declaration, options)));
+  }
+
+  // -- limits and placement --------------------------------------------------------------------
+
+  /**
+   * Sets what one instance of an application may use.
+   *
+   * Zero removes a limit, and a limit left out is left as it stands - so a memory limit can be set
+   * without saying anything about CPU. Giving neither is refused rather than treated as a no-op.
+   *
+   * A memory limit is **admitted against the account's nodes**: the server adds up what every running
+   * application has committed and refuses with HTTP 409 a limit the fleet could not keep, rather than
+   * letting it be discovered when an instance has nowhere to be placed. `node.memoryMb` is the figure
+   * it measures against - what a node offers applications, which is less than the machine's memory.
+   *
+   * @param applicationId the application
+   * @param limits memory in MiB, CPUs as a fraction - `1.5` is a CPU and a half
+   */
+  async setApplicationLimits(applicationId: string, limits: ApplicationLimits): Promise<Application> {
+    const payload: Record<string, unknown> = { applicationId };
+    if (limits.memoryLimitMb !== undefined) payload["memoryLimitMb"] = limits.memoryLimitMb;
+    if (limits.cpuLimit !== undefined) payload["cpuLimit"] = limits.cpuLimit;
+    return this.#application("set-application-limits", payload);
+  }
+
+  /**
+   * Asks for an application's instances to be placed again.
+   *
+   * What {@link restartApplication} is for a definition that changed, this is for a *fleet* that
+   * changed: a node that was added, drained or had its labels edited leaves a pool sitting where it was
+   * placed, since nothing moves an instance that is running happily. This cycles them so the manager
+   * chooses again.
+   *
+   * Recorded rather than done. `instances` is how many will be worked through, one per reconcile tick,
+   * so the application keeps serving out of the ones not yet reached.
+   */
+  async rebalanceApplication(applicationId: string): Promise<RebalanceResult> {
+    return toRebalanceResult(await this.call("rebalance-application", { applicationId }));
+  }
+
+  // -- egress ----------------------------------------------------------------------------------
+
+  /**
+   * The sites an application calls, with their limits and what those limits are doing now.
+   *
+   * `defaultLimits` is what a site nobody has configured falls back to, and each entry's `limitsSet`
+   * says whether its limits are its own or inherited. `tokens`, `inFlight` and `blockedUntil` are as of
+   * *now* rather than as of the last write: a bucket nobody has drawn on is full, and a permit whose
+   * lease ran out is free.
+   *
+   * The `*` entry is an application's own default rather than a site, and carries no state - nobody
+   * acquires a permit for it.
+   *
+   * @param applicationId one application; empty lists every application's sites
+   */
+  async listEgressSites(applicationId = ""): Promise<EgressSiteListing> {
+    const payload: Record<string, unknown> = {};
+    if (applicationId) payload["applicationId"] = applicationId;
+    return toEgressSiteListing(await this.call("list-egress-sites", payload));
+  }
+
+  /**
+   * Sets how hard an application may call one site.
+   *
+   * A limit left out is left as it stands, and at least one is required. `site` is the host name to be
+   * called - `downloads.example.com` - or {@link EVERY_EGRESS_SITE} to set the application's own
+   * default for every site it has no entry of its own for.
+   *
+   * `burst` above `requestsPerSecond` is what lets an application that has been quiet spend a backlog
+   * at once; `concurrent` is how many permits may be out at the same time, whatever the rate.
+   */
+  async setEgressLimit(applicationId: string, site: string, limits: Partial<EgressLimits>): Promise<EgressLimitResult> {
+    const payload: Record<string, unknown> = { applicationId, site };
+    if (limits.requestsPerSecond !== undefined) payload["requestsPerSecond"] = limits.requestsPerSecond;
+    if (limits.burst !== undefined) payload["burst"] = limits.burst;
+    if (limits.concurrent !== undefined) payload["concurrent"] = limits.concurrent;
+    return toEgressLimitResult(await this.call("set-egress-limit", payload));
+  }
+
+  /**
+   * Takes away a site's own limits, so it inherits again.
+   *
+   * The site stays and keeps its state; what goes is the limits set on it, after which it falls back to
+   * the application's `*` entry or the installation's default. The result says what it is held to now.
+   */
+  async deleteEgressLimit(applicationId: string, site: string): Promise<EgressLimitResult> {
+    return toEgressLimitResult(await this.call("delete-egress-limit", { applicationId, site }));
+  }
+
+  /**
+   * Forgets a site entirely - its limits, its bucket and whatever it had in flight.
+   *
+   * Unlike {@link deleteEgressLimit}, which only takes away the limits. An application that calls the
+   * site again starts it afresh, inheriting its limits, which is what makes this the right call for a
+   * site an application no longer uses rather than one whose limits were wrong.
+   */
+  async deleteEgressSite(applicationId: string, site: string): Promise<EgressSiteRemoved> {
+    return toEgressSiteRemoved(await this.call("delete-egress-site", { applicationId, site }));
+  }
+
+  /**
+   * Asks whether an application may call a site now, and takes a permit if it may.
+   *
+   * Called by the application about itself, before it makes the call - the identity it runs as, or an
+   * administrator, and nobody else. `applicationId` is required and is the one euclid handed the
+   * process in `EUCLID_APPLICATION_ID`.
+   *
+   * **A refusal is not an error.** `granted: false` comes back 200 with `reason` - which limit stood in
+   * the way - and `retryAfterMs`, which is what makes this a rate limiter rather than a failure. A
+   * caller that treats a refusal as an exception has turned a queue into an outage.
+   *
+   * A granted permit has a lease and expires on its own, so an application that dies holding one does
+   * not hold it forever. {@link releaseEgressPermit} is how it is given back early, which is what frees
+   * the slot for the next call rather than leaving it until the lease runs out.
+   *
+   * @param applicationId the application making the call
+   * @param site the host name about to be called
+   * @param options how long to hold the permit for; 1 second to the server's own maximum
+   */
+  async acquireEgressPermit(applicationId: string, site: string, options: EgressPermitOptions = {}): Promise<EgressPermit> {
+    const payload: Record<string, unknown> = { applicationId, site };
+    if (options.leaseSeconds !== undefined) payload["leaseSeconds"] = options.leaseSeconds;
+    return toEgressPermit(await this.call("acquire-egress-permit", payload));
+  }
+
+  /**
+   * Gives a permit back, before its lease runs out.
+   *
+   * `released: false` is not a failure either: it means the lease had already expired and the slot was
+   * free again, which is the ordinary end of a call that took longer than its permit.
+   */
+  async releaseEgressPermit(applicationId: string, site: string, permitId: string): Promise<EgressRelease> {
+    return toEgressRelease(await this.call("release-egress-permit", { applicationId, site, permitId }));
+  }
+
+  /**
+   * Tells euclid that a site refused a call for being called too often, so it stops trying.
+   *
+   * What an application does with a 429 or a `Retry-After`: the site is blocked for the period given,
+   * and every permit for it is refused until then - including the ones other instances of the same
+   * application would have taken, which is the point of reporting it centrally rather than backing off
+   * alone.
+   *
+   * @param retryAfterSeconds how long the site asked to be left alone; at least 1, and the server
+   *   defaults to 60 for a site that gave no figure
+   */
+  async reportEgressThrottled(
+    applicationId: string,
+    site: string,
+    retryAfterSeconds?: number,
+  ): Promise<EgressThrottled> {
+    const payload: Record<string, unknown> = { applicationId, site };
+    if (retryAfterSeconds !== undefined) payload["retryAfterSeconds"] = retryAfterSeconds;
+    return toEgressThrottled(await this.call("report-egress-throttled", payload));
   }
 
   /**

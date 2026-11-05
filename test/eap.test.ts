@@ -21,6 +21,7 @@ import {
   RUNTIME_JAVA21,
   RUNTIME_JAVA25,
   RUNTIME_PYTHON,
+  EVERY_EGRESS_SITE,
   STATE_RUNNING,
   STATE_STOPPED,
   TYPE_JOB,
@@ -55,6 +56,8 @@ const APPLICATION = {
   minInstances: 2,
   maxInstances: 5,
   readyTimeoutMs: 30000,
+  memoryLimitMb: 0,
+  cpuLimit: 0,
   type: "PROCESS",
   schedule: "",
   nextRunAt: "",
@@ -680,6 +683,303 @@ describe("reporting load", () => {
 
     assert.equal(gateway.last().json()["utilisation"], 150);
     assert.equal(report.utilisation, 100);
+  });
+});
+
+describe("limits and placement", () => {
+  it("sets one limit without saying anything about the other", async () => {
+    gateway.answer("eap", "set-application-limits", { ...APPLICATION, memoryLimitMb: 2048 });
+
+    const limited = await eap.setApplicationLimits("order-service", { memoryLimitMb: 2048 });
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", memoryLimitMb: 2048 });
+    assert.equal(limited.memoryLimitMb, 2048);
+
+    // Zero removes a limit, so it has to be sendable.
+    await eap.setApplicationLimits("order-service", { memoryLimitMb: 0, cpuLimit: 1.5 });
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", memoryLimitMb: 0, cpuLimit: 1.5 });
+  });
+
+  it("passes the fleet's refusal of a memory limit through", async () => {
+    // Admitted against what the account's nodes offer, so a limit the fleet cannot keep is refused
+    // when it is set rather than discovered when an instance has nowhere to go.
+    gateway.answer("eap", "set-application-limits", { error: "no node offers 64 GiB" }, 409);
+
+    await assert.rejects(
+      () => eap.setApplicationLimits("order-service", { memoryLimitMb: 65536 }),
+      (error: EuclidServiceError) => {
+        assert.deepEqual([error.action, error.status], ["set-application-limits", 409]);
+        return true;
+      },
+    );
+  });
+
+  it("asks for a pool to be placed again", async () => {
+    gateway.answer("eap", "rebalance-application", {
+      applicationId: "order-service",
+      rebalancing: true,
+      instances: 4,
+    });
+
+    const result = await eap.rebalanceApplication("order-service");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
+    // Recorded rather than done: four instances to work through, one per reconcile tick.
+    assert.deepEqual([result.rebalancing, result.instances], [true, 4]);
+  });
+});
+
+describe("planning infrastructure", () => {
+  const PLAN = {
+    applicationId: "order-service",
+    declared: true,
+    dryRun: true,
+    created: ["ern:eqs:queue/orders-dlq"],
+    adopted: ["ern:esm:bucket/artifacts"],
+    updated: [{ ern: "ern:eqs:queue/orders", changes: ["retention 7d -> 14d"] }],
+    deleted: ["ern:eqs:queue/orders-old"],
+    kept: [{ ern: "ern:esm:bucket/reports", reason: "holds 412 objects" }],
+    granted: ["access-orders"],
+    revoked: [],
+  };
+
+  it("says what an apply would do, and changes nothing", async () => {
+    gateway.answer("eap", "plan-infrastructure", PLAN);
+
+    const plan = await eap.planInfrastructure("order-service");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
+    assert.equal(plan.dryRun, true);
+    // The two lists this call exists for: what would go, and what would be left behind and why.
+    assert.deepEqual(plan.deleted, ["ern:eqs:queue/orders-old"]);
+    assert.deepEqual(plan.kept, [{ ern: "ern:esm:bucket/reports", reason: "holds 412 objects" }]);
+    // Adopting is not creating: nothing is made, and what was there is untouched.
+    assert.deepEqual(plan.adopted, ["ern:esm:bucket/artifacts"]);
+    assert.deepEqual(plan.updated[0]?.changes, ["retention 7d -> 14d"]);
+  });
+
+  it("plans against a declaration that has not been stored yet", async () => {
+    gateway.answer("eap", "plan-infrastructure", PLAN);
+
+    const declaration = { version: 1, creates: { queues: [{ name: "orders" }] } };
+    await eap.planInfrastructure("order-service", { declaration, prune: false });
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", prune: false, declaration });
+  });
+
+  it("carries prune on an apply, and leaves it out when it was not named", async () => {
+    gateway.answer("eap", "apply-infrastructure", { ...PLAN, dryRun: false });
+
+    await eap.applyInfrastructure("order-service");
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
+
+    await eap.applyInfrastructure("order-service", { prune: false });
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", prune: false });
+  });
+});
+
+describe("platforms", () => {
+  it("applies and plans a declaration nobody's application owns", async () => {
+    const declaration = { version: 1, creates: { topics: [{ name: "audit" }] } };
+    gateway.answer("eap", "plan-platform", {
+      platform: "platform",
+      declared: true,
+      dryRun: true,
+      created: ["ern:ens:topic/audit"],
+    });
+    gateway.answer("eap", "apply-platform", {
+      platform: "shared",
+      declared: true,
+      dryRun: false,
+      created: ["ern:ens:topic/audit"],
+    });
+
+    const planned = await eap.planPlatform(declaration);
+    assert.deepEqual(gateway.last().json(), { declaration });
+    assert.deepEqual([planned.platform, planned.dryRun], ["platform", true]);
+
+    const applied = await eap.applyPlatform(declaration, { name: "shared", prune: false });
+    assert.deepEqual(gateway.last().json(), { declaration, name: "shared", prune: false });
+    assert.deepEqual([applied.platform, applied.dryRun], ["shared", false]);
+  });
+
+  it("lists platforms and reads one, with an unreadable declaration as null", async () => {
+    gateway.answer("eap", "list-platforms", {
+      platforms: [
+        {
+          name: "platform",
+          namespace: "development",
+          owns: ["ern:ens:topic/audit"],
+          declaration: { version: 1 },
+          modified: "2026-11-05",
+        },
+        // What the server sends for a record it could not parse, which is not an empty declaration.
+        { name: "legacy", declaration: null },
+      ],
+    });
+    gateway.answer("eap", "get-platform", { name: "shared", owns: [], declaration: { version: 1 } });
+
+    const platforms = await eap.listPlatforms();
+    assert.deepEqual(platforms[0]?.declaration, { version: 1 });
+    assert.equal(platforms[1]?.declaration, null);
+    assert.deepEqual(platforms[0]?.owns, ["ern:ens:topic/audit"]);
+
+    await eap.getPlatform("shared");
+    assert.deepEqual(gateway.last().json(), { name: "shared" });
+    // The server's own default name, so nothing is sent for it.
+    await eap.getPlatform();
+    assert.deepEqual(gateway.last().json(), {});
+  });
+
+  it("passes on the refusal of a declaration that belongs to an application", async () => {
+    gateway.answer(
+      "eap",
+      "apply-platform",
+      { error: "this declaration belongs to application 'order-service', not to a platform" },
+      400,
+    );
+
+    await assert.rejects(
+      () => eap.applyPlatform({ version: 1, applicationId: "order-service" }),
+      (error: EuclidServiceError) => {
+        assert.equal(error.status, 400);
+        return true;
+      },
+    );
+  });
+});
+
+describe("egress", () => {
+  it("lists the sites an application calls, with their limits as of now", async () => {
+    gateway.answer("eap", "list-egress-sites", {
+      defaultLimits: { requestsPerSecond: 10, burst: 20, concurrent: 4 },
+      sites: [
+        {
+          applicationId: "order-service",
+          site: "downloads.example.com",
+          limits: { requestsPerSecond: 2, burst: 10, concurrent: 1 },
+          limitsSet: true,
+          tokens: 7.5,
+          inFlight: 1,
+          blockedUntil: "2026-11-05T09:10:00Z",
+          lastUsed: "2026-11-05T09:00:00Z",
+        },
+        // The "*" entry is the application's own default and has no state of its own.
+        {
+          applicationId: "order-service",
+          site: "*",
+          limits: { requestsPerSecond: 5, burst: 5, concurrent: 2 },
+          limitsSet: true,
+        },
+      ],
+    });
+
+    const listing = await eap.listEgressSites("order-service");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service" });
+    assert.equal(listing.defaultLimits.requestsPerSecond, 10);
+    // As of now rather than as of the last write: a bucket nobody drew on is full again.
+    assert.deepEqual([listing.sites[0]?.tokens, listing.sites[0]?.inFlight], [7.5, 1]);
+    assert.equal(listing.sites[0]?.blockedUntil, "2026-11-05T09:10:00Z");
+    assert.equal(listing.sites[1]?.site, EVERY_EGRESS_SITE);
+    assert.equal(listing.sites[1]?.tokens, 0);
+  });
+
+  it("sets, clears and forgets a site's limits", async () => {
+    const limits = { requestsPerSecond: 2, burst: 10, concurrent: 1 };
+    gateway.answer("eap", "set-egress-limit", { applicationId: "order-service", site: "downloads.example.com", limits });
+    gateway.answer("eap", "delete-egress-limit", {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      limits: { requestsPerSecond: 10, burst: 20, concurrent: 4 },
+    });
+    gateway.answer("eap", "delete-egress-site", {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      removed: true,
+    });
+
+    await eap.setEgressLimit("order-service", "downloads.example.com", { requestsPerSecond: 2, concurrent: 1 });
+    // Only what was given: burst was not named and is left as it stands.
+    assert.deepEqual(gateway.last().json(), {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      requestsPerSecond: 2,
+      concurrent: 1,
+    });
+
+    // Clearing the limits leaves the site and says what it is held to now - the inherited figures.
+    const cleared = await eap.deleteEgressLimit("order-service", "downloads.example.com");
+    assert.equal(cleared.limits.requestsPerSecond, 10);
+
+    const removed = await eap.deleteEgressSite("order-service", "downloads.example.com");
+    assert.equal(removed.removed, true);
+  });
+
+  it("treats a refused permit as an answer rather than an error", async () => {
+    gateway.answer("eap", "acquire-egress-permit", {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      granted: false,
+      limits: { requestsPerSecond: 2, burst: 10, concurrent: 1 },
+      reason: "Concurrency",
+      retryAfterMs: 100,
+    });
+
+    // 200, not an exception: a caller that threw here would have turned a queue into an outage.
+    const refused = await eap.acquireEgressPermit("order-service", "downloads.example.com");
+
+    assert.deepEqual(gateway.last().json(), { applicationId: "order-service", site: "downloads.example.com" });
+    assert.equal(refused.granted, false);
+    assert.deepEqual([refused.reason, refused.retryAfterMs], ["Concurrency", 100]);
+    assert.equal(refused.permitId, "");
+  });
+
+  it("takes a permit, gives it back, and reports a site that refused the call", async () => {
+    gateway.answer("eap", "acquire-egress-permit", {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      granted: true,
+      limits: { requestsPerSecond: 2, burst: 10, concurrent: 1 },
+      permitId: "permit-1",
+      expiresAt: "2026-11-05T09:00:30Z",
+    });
+    gateway.answer("eap", "release-egress-permit", {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      released: true,
+    });
+    gateway.answer("eap", "report-egress-throttled", {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      blockedUntil: "2026-11-05T09:01:00Z",
+    });
+
+    const permit = await eap.acquireEgressPermit("order-service", "downloads.example.com", { leaseSeconds: 30 });
+    assert.deepEqual(gateway.last().json(), {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      leaseSeconds: 30,
+    });
+    // A permit has a lease, so an application that dies holding one does not hold it forever.
+    assert.deepEqual([permit.permitId, permit.expiresAt], ["permit-1", "2026-11-05T09:00:30Z"]);
+
+    const released = await eap.releaseEgressPermit("order-service", "downloads.example.com", permit.permitId);
+    assert.deepEqual(gateway.last().json(), {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      permitId: "permit-1",
+    });
+    assert.equal(released.released, true);
+
+    // Reported centrally, so every instance of the application backs off rather than each finding out.
+    const throttled = await eap.reportEgressThrottled("order-service", "downloads.example.com", 60);
+    assert.deepEqual(gateway.last().json(), {
+      applicationId: "order-service",
+      site: "downloads.example.com",
+      retryAfterSeconds: 60,
+    });
+    assert.equal(throttled.blockedUntil, "2026-11-05T09:01:00Z");
   });
 });
 

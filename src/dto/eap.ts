@@ -8,7 +8,7 @@
  * in hand; ERNs are what euclid stores, and the server resolves the one into the other.
  */
 
-import { documents, flag, number, stringMap, strings, text } from "./json.js";
+import { documents, flag, number, object, stringMap, strings, text } from "./json.js";
 
 /**
  * One running instance of an application, and where it can be reached.
@@ -101,6 +101,16 @@ export interface Application {
   maxInstances: number;
   readyTimeoutMs: number;
   /**
+   * The memory each instance may use, in MiB, or 0 for no limit - see
+   * {@link import("../modules/eap.js").EuclidEap.setApplicationLimits}.
+   *
+   * This is what the account's nodes are admitted against: a limit the fleet cannot keep is refused when
+   * it is set, rather than discovered when an instance is placed.
+   */
+  memoryLimitMb: number;
+  /** How many CPUs each instance may use - `1.5` is a CPU and a half - or 0 for no limit. */
+  cpuLimit: number;
+  /**
    * `PROCESS` or `JOB` - what finishing means for this application, and so whether an exit is a fault. See
    * {@link import("../modules/eap.js").TYPE_JOB}.
    *
@@ -170,10 +180,163 @@ export interface RestartResult {
 export interface InfrastructureResult {
   applicationId: string;
   declared: boolean;
+  /**
+   * Whether this was a plan rather than a change - see
+   * {@link import("../modules/eap.js").EuclidEap.planInfrastructure}. A plan's lists say what *would*
+   * happen, and nothing has.
+   */
+  dryRun: boolean;
   created: string[];
+  /**
+   * Resources the declaration names that already existed and are now recorded as this application's.
+   * Adopting is not creating: nothing was made, and what was there is untouched.
+   */
+  adopted: string[];
+  /** Resources that stay but change - a retention period, a limit - and what about them changes. */
+  updated: InfrastructureChange[];
   deleted: string[];
+  /**
+   * Resources the declaration no longer names and that were **not** removed, each with the server's
+   * reason - a queue with messages on it, a bucket holding objects. Reading this is how a caller finds
+   * out that a reconcile left something behind rather than silently keeping it.
+   */
+  kept: InfrastructureKept[];
   granted: string[];
   revoked: string[];
+}
+
+/** One resource a reconcile changes in place, and what about it changes. */
+export interface InfrastructureChange {
+  ern: string;
+  changes: string[];
+}
+
+/** One resource a reconcile would have removed, and why it did not. */
+export interface InfrastructureKept {
+  ern: string;
+  reason: string;
+}
+
+/** What applying or planning a platform declaration came to - an infrastructure plan, plus whose. */
+export interface PlatformResult extends InfrastructureResult {
+  platform: string;
+}
+
+/**
+ * A stored platform: the shared infrastructure of a namespace, owned by nobody's application.
+ *
+ * `owns` is every resource the last apply recorded as this platform's, and `declaration` is the
+ * declaration as it was stored - the same shape a file holds, and `null` for a record this euclid
+ * could not parse.
+ */
+export interface Platform {
+  name: string;
+  namespace: string;
+  owns: string[];
+  declaration: Record<string, unknown> | null;
+  modified: string;
+}
+
+/**
+ * What a rebalance request came to.
+ *
+ * `rebalancing` says the request was recorded, not that anything has moved: the manager places the
+ * instances again on its next reconcile, and `instances` is how many it will work through.
+ */
+export interface RebalanceResult {
+  applicationId: string;
+  rebalancing: boolean;
+  instances: number;
+}
+
+/**
+ * How much an application may call one site.
+ *
+ * `requestsPerSecond` is the rate the bucket refills at, `burst` how much it may hold - so a burst
+ * above the rate is what lets a quiet application spend a backlog at once - and `concurrent` how many
+ * permits may be out at the same time.
+ */
+export interface EgressLimits {
+  requestsPerSecond: number;
+  burst: number;
+  concurrent: number;
+}
+
+/**
+ * One site an application calls, with its limits and what they are doing right now.
+ *
+ * `limitsSet` tells a site's own limits from the ones it inherits: false means these are the
+ * application's `*` entry or the installation's default, and setting a limit here would change only
+ * this site.
+ *
+ * `tokens`, `inFlight` and `blockedUntil` are *as of now* rather than as of the last write - a bucket
+ * nobody has drawn on for an hour is full, and a permit whose lease ran out is free. They are absent
+ * for the `*` entry, which is an application's default and has no state: nobody acquires a permit for
+ * it.
+ */
+export interface EgressSite {
+  applicationId: string;
+  site: string;
+  limits: EgressLimits;
+  limitsSet: boolean;
+  tokens: number;
+  inFlight: number;
+  /** When a site that answered 429 may be called again, or empty when it is not blocked. */
+  blockedUntil: string;
+  lastUsed: string;
+}
+
+/** The sites an application calls, and the limits anything unnamed falls back to. */
+export interface EgressSiteListing {
+  defaultLimits: EgressLimits;
+  sites: EgressSite[];
+}
+
+/** A site's limits after setting or clearing them. */
+export interface EgressLimitResult {
+  applicationId: string;
+  site: string;
+  limits: EgressLimits;
+}
+
+/** A site that has been forgotten entirely - its limits and its state with it. */
+export interface EgressSiteRemoved {
+  applicationId: string;
+  site: string;
+  removed: boolean;
+}
+
+/**
+ * Whether an application may make one call now.
+ *
+ * `granted` is the whole answer, and a refusal is **not** an error: `reason` says which limit stood in
+ * the way and `retryAfterMs` how long to wait, which is what makes this a rate limiter rather than a
+ * failure. `permitId` and `expiresAt` are set only when it was granted - the permit has a lease, so a
+ * caller that dies holding one does not hold it forever.
+ */
+export interface EgressPermit {
+  applicationId: string;
+  site: string;
+  granted: boolean;
+  limits: EgressLimits;
+  permitId: string;
+  expiresAt: string;
+  reason: string;
+  retryAfterMs: number;
+}
+
+/** Whether a permit was still held when it was released. False means its lease had already run out. */
+export interface EgressRelease {
+  applicationId: string;
+  site: string;
+  released: boolean;
+}
+
+/** When a site that answered "too many requests" may be called again. */
+export interface EgressThrottled {
+  applicationId: string;
+  site: string;
+  blockedUntil: string;
 }
 
 /**
@@ -335,6 +498,8 @@ export function toApplication(document: unknown): Application {
     minInstances: number(document, "minInstances"),
     maxInstances: number(document, "maxInstances"),
     readyTimeoutMs: number(document, "readyTimeoutMs"),
+    memoryLimitMb: number(document, "memoryLimitMb"),
+    cpuLimit: number(document, "cpuLimit"),
     // "PROCESS" when absent, which is the server's own rule for a definition stored before the field
     // existed: it is one, and has to go on behaving as one. Written out rather than taken from
     // TYPE_PROCESS so that this file stays below the modules in the import graph.
@@ -362,10 +527,125 @@ export function toInfrastructureResult(document: unknown): InfrastructureResult 
   return {
     applicationId: text(document, "applicationId"),
     declared: flag(document, "declared"),
+    dryRun: flag(document, "dryRun"),
     created: strings(document, "created"),
+    adopted: strings(document, "adopted"),
+    updated: documents(document, "updated").map((entry) => ({
+      ern: text(entry, "ern"),
+      changes: strings(entry, "changes"),
+    })),
     deleted: strings(document, "deleted"),
+    kept: documents(document, "kept").map((entry) => ({
+      ern: text(entry, "ern"),
+      reason: text(entry, "reason"),
+    })),
     granted: strings(document, "granted"),
     revoked: strings(document, "revoked"),
+  };
+}
+
+export function toPlatformResult(document: unknown): PlatformResult {
+  return { ...toInfrastructureResult(document), platform: text(document, "platform") };
+}
+
+export function toPlatform(document: unknown): Platform {
+  const declaration = object(document)["declaration"];
+  return {
+    name: text(document, "name"),
+    namespace: text(document, "namespace"),
+    owns: strings(document, "owns"),
+    // Null for a record this euclid could not parse, which is the server's own answer rather than an
+    // empty object - those are different things to a caller about to re-apply it.
+    declaration:
+      declaration !== null && typeof declaration === "object" && !Array.isArray(declaration)
+        ? (declaration as Record<string, unknown>)
+        : null,
+    modified: text(document, "modified"),
+  };
+}
+
+export function toPlatforms(document: unknown): Platform[] {
+  return documents(document, "platforms").map(toPlatform);
+}
+
+export function toRebalanceResult(document: unknown): RebalanceResult {
+  return {
+    applicationId: text(document, "applicationId"),
+    rebalancing: flag(document, "rebalancing"),
+    instances: number(document, "instances"),
+  };
+}
+
+export function toEgressLimits(document: unknown): EgressLimits {
+  return {
+    requestsPerSecond: number(document, "requestsPerSecond"),
+    burst: number(document, "burst"),
+    concurrent: number(document, "concurrent"),
+  };
+}
+
+export function toEgressSite(document: unknown): EgressSite {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    limits: toEgressLimits(object(document)["limits"]),
+    limitsSet: flag(document, "limitsSet"),
+    tokens: number(document, "tokens"),
+    inFlight: number(document, "inFlight"),
+    blockedUntil: text(document, "blockedUntil"),
+    lastUsed: text(document, "lastUsed"),
+  };
+}
+
+export function toEgressSiteListing(document: unknown): EgressSiteListing {
+  return {
+    defaultLimits: toEgressLimits(object(document)["defaultLimits"]),
+    sites: documents(document, "sites").map(toEgressSite),
+  };
+}
+
+export function toEgressLimitResult(document: unknown): EgressLimitResult {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    limits: toEgressLimits(object(document)["limits"]),
+  };
+}
+
+export function toEgressSiteRemoved(document: unknown): EgressSiteRemoved {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    removed: flag(document, "removed"),
+  };
+}
+
+export function toEgressPermit(document: unknown): EgressPermit {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    granted: flag(document, "granted"),
+    limits: toEgressLimits(object(document)["limits"]),
+    permitId: text(document, "permitId"),
+    expiresAt: text(document, "expiresAt"),
+    reason: text(document, "reason"),
+    retryAfterMs: number(document, "retryAfterMs"),
+  };
+}
+
+export function toEgressRelease(document: unknown): EgressRelease {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    released: flag(document, "released"),
+  };
+}
+
+export function toEgressThrottled(document: unknown): EgressThrottled {
+  return {
+    applicationId: text(document, "applicationId"),
+    site: text(document, "site"),
+    blockedUntil: text(document, "blockedUntil"),
   };
 }
 
