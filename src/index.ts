@@ -197,6 +197,8 @@ export type {
 export type {
   Bucket,
   BucketEvent,
+  BucketLifecycle,
+  BucketStateResult,
   AbortUploadResult,
   CreateBucketResult,
   CreateDownloadResult,
@@ -205,7 +207,10 @@ export type {
   DisableEncryptionResult,
   EnableEncryptionResult,
   EsmObject,
+  LifecycleRule,
   ObjectAttribute,
+  ObjectLifecycle,
+  ObjectProblem,
   DeleteBucketResult,
   PurgeBucketResult,
   RenameBucketResult,
@@ -213,6 +218,7 @@ export type {
   SetBucketPriorityResult,
   StoredObject,
   TouchObjectResult,
+  VerifyObjectsResult,
 } from "./dto/esm.js";
 export { EuclidAuthenticationError, EuclidError, EuclidServiceError } from "./errors.js";
 export { DEFAULT_CA_CERT_PATH, EuclidHttpClient, Response } from "./http/client.js";
@@ -375,6 +381,8 @@ export {
   DEFAULT_CONCURRENCY,
   DEFAULT_PART_SIZE,
   EuclidEsm,
+  LIFECYCLE_ARCHIVED,
+  LIFECYCLE_STANDARD,
   OBJECT_CREATED,
   OBJECT_DELETED,
   OBJECT_UPDATED,
@@ -387,7 +395,10 @@ export {
   type ListObjectsOptions,
   type SubscribeOptions,
   type TouchObjectOptions,
+  type LifecycleRuleInput,
+  type ObjectRef,
   type UploadOptions,
+  type VerifyObjectsOptions,
 } from "./modules/esm.js";
 
 /** The version this package was published as. */

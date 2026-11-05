@@ -282,7 +282,11 @@ calls scopes the second one.
 | `setBucketInternal` | whether a bucket is euclid's own plumbing, and so left out of a listing |
 | `setBucketPriority` | the priority the notifications this bucket sends are given |
 | `listObjects`, `copyObject`, `moveObject`, `renameObject`, `deleteObject`, `deleteObjects` | objects |
-| `countObjects`, `getObjectCount` | how many there are: counted exactly, or the bucket's stored running total |
+| `countObjects`, `getObjectCount`, `getObjectSize` | how many there are, and how large one is |
+| `archiveObject`, `restoreObject` | moving one object's bytes into an archive, and bringing them back |
+| `getBucketLifecycle`, `setBucketLifecycle`, `deleteBucketLifecycle` | what a bucket archives on its own |
+| `stopBucket`, `startBucket` | holding a bucket's event notifications, and letting them go |
+| `verifyObjects` | checking the files behind the records |
 | `touchObject` | re-announce objects already stored, for a listener that missed their events |
 | `addObjectAttribute`, `setObjectAttribute`, `listObjectAttributes`, `deleteObjectAttribute` | user-defined attributes |
 | `subscribe`, `listSubscriptions`, `unsubscribe`, `parseBucketEvent` | a bucket's events, into a queue or a topic |
@@ -311,6 +315,57 @@ something over an outage:
 ```ts
 if (!(await session.esm().existsBucket("reports"))) await session.esm().createBucket("reports");
 ```
+
+### Archiving
+
+An object's bytes can be moved into an archive - one file per month - while the object itself stays
+exactly where it was:
+
+```ts
+await esm.archiveObject({ bucketErn, key: "2024/q1.pdf" });
+await esm.restoreObject({ bucketErn, key: "2024/q1.pdf" }, 7);   // online again for seven days
+```
+
+An archived object is still listed, still has its key, size and attributes, and answers every call about
+it **except a read of its bytes**: `getObject` and `downloadFile` need it restored first. `lifecycleState`
+on the object says which it is, and an object that says nothing reads as `STANDARD` - what everything
+written before archiving existed is.
+
+A restore is a grace period rather than a state. `restoredUntil` says when the object goes back to being
+archived, and the archive it came out of stays named until then, because the bytes are still in it.
+Leaving `days` out uses the covering rule's `restoreDays`, which is what a bucket with rules means by a
+restore.
+
+`setBucketLifecycle` is what a bucket does on its own, and replaces every rule rather than adding one:
+
+```ts
+await esm.setBucketLifecycle(bucketErn, [
+  { id: "cold-reports", prefix: "reports/", archiveAfterDays: 90, restoreDays: 7 },
+]);
+```
+
+`archiveAfterDays` is measured from an object's last access rather than its age, so a rule does not
+archive what is being read. The set is validated as a whole - a rule with no id, a period outside 1 to
+36500 days, or two rules sharing an id refuses the request and changes nothing - and rules decide what to
+archive, never what to bring back: clearing them with `deleteBucketLifecycle` leaves what is already
+archived where it is. euclid's own buckets cannot have rules at all, since the modules that read them know
+nothing of an archive.
+
+### Holding a bucket's events
+
+`stopBucket` holds the notifications a subscription would have sent, and keeps them: `held` says how many
+are waiting, `startBucket` lets them go and says how many went. The objects are untouched and the bucket
+goes on accepting uploads throughout, which is what a subscriber being redeployed asks for. Starting a
+bucket that was never stopped releases nothing and is not an error. `Bucket.stopped` reports the state.
+
+### Verifying
+
+`verifyObjects` checks a page of a bucket's objects against the files behind them - the one failure a
+listing cannot show. An upload in progress, an archived object and a directory marker are *skipped*
+rather than reported, which is why `scanned`, `checked` and `skipped` are three separate numbers.
+
+It pages by key, not by index, because a bucket being written to while it is checked would otherwise skip
+or repeat objects: pass the previous answer's `nextKey` as `afterKey` and stop when it comes back empty.
 
 ### Writing and reading bytes
 

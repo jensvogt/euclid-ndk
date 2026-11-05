@@ -13,7 +13,7 @@
  */
 
 import { toVariant, toVariantMap, type Variant } from "./com.js";
-import { flag, number, object, stringMap, text } from "./json.js";
+import { documents, flag, number, object, stringMap, text } from "./json.js";
 
 // -- resources -----------------------------------------------------------------------------------
 
@@ -33,6 +33,12 @@ export interface Bucket {
   encryptionKeyErn: string;
   /** One of euclid's own buckets rather than somebody's. Left out of a listing unless asked for. */
   internal: boolean;
+  /**
+   * Whether this bucket's events are being held rather than delivered - see
+   * {@link import("../modules/esm.js").EuclidEsm.stopBucket}. The objects are untouched either way;
+   * what is stopped is the notifications a subscription would have sent.
+   */
+  stopped: boolean;
   /**
    * Priority the notifications this bucket sends are given, empty when it sets none. Nothing about the
    * bucket depends on it - see
@@ -59,6 +65,16 @@ export interface EsmObject {
   md5Sum: string;
   encrypted: boolean;
   attributes: Record<string, Variant>;
+  /**
+   * `STANDARD` or `ARCHIVED` - whether the bytes are still on disk or in a month's archive. See
+   * {@link import("../modules/esm.js").LIFECYCLE_ARCHIVED}.
+   *
+   * An archived object is still listed, still has its key and its size, and still answers every call
+   * about it *except* a read of its bytes: `getObject` and `downloadFile` need it restored first.
+   */
+  lifecycleState: string;
+  /** Until when a restored object stays online - its grace period - or empty. */
+  restoredUntil: string;
   created: string;
   modified: string;
 }
@@ -272,6 +288,104 @@ export interface CreateDownloadResult {
   contentType: string;
 }
 
+/**
+ * Where one object stands between online and archived.
+ *
+ * `archivedAt`, `restoredAt`, `restoredUntil` and `archiveFile` are each empty until there is something
+ * to say: an object that has never been archived has none of them, and a restored one keeps the archive
+ * it came out of named, because the bytes are still in it until the grace period ends.
+ */
+export interface ObjectLifecycle {
+  ern: string;
+  bucketErn: string;
+  key: string;
+  /** `STANDARD` or `ARCHIVED`. */
+  lifecycleState: string;
+  archivedAt: string;
+  restoredAt: string;
+  /** When a restored object goes back to being archived, or empty for one that is not restored. */
+  restoredUntil: string;
+  /** The archive holding its bytes - one file per month - or empty for an object that is online. */
+  archiveFile: string;
+}
+
+/**
+ * One rule for what a bucket archives on its own, and for how long a restore keeps it back.
+ *
+ * `prefix` is what the rule covers, empty for the whole bucket. `archiveAfterDays` is measured from an
+ * object's last access rather than its age, so a rule does not archive what is being read.
+ */
+export interface LifecycleRule {
+  id: string;
+  prefix: string;
+  archiveAfterDays: number;
+  restoreDays: number;
+  enabled: boolean;
+}
+
+/** A bucket's lifecycle rules, as they now stand. An empty list is a bucket that archives nothing. */
+export interface BucketLifecycle {
+  ern: string;
+  name: string;
+  rules: LifecycleRule[];
+}
+
+/**
+ * A bucket's event delivery after stopping or starting it.
+ *
+ * `held` is what is waiting after a stop, `released` what was let go by a start - each reported by the
+ * call it belongs to and zero in the other.
+ */
+export interface BucketStateResult {
+  ern: string;
+  name: string;
+  stopped: boolean;
+  held: number;
+  released: number;
+}
+
+/**
+ * One object whose file on disk does not match what the database says about it.
+ *
+ * `problem` is the server's own word for what is wrong - a file that is missing, or one whose size does
+ * not match. `recordedSize` is what the database holds, `fileSize` what is on disk, and
+ * `expectedFileSize` what the file *should* measure, which for an encrypted object is not its plaintext
+ * size.
+ */
+export interface ObjectProblem {
+  key: string;
+  ern: string;
+  problem: string;
+  recordedSize: number;
+  fileSize: number;
+  expectedFileSize: number;
+  internalName: string;
+  internalDir: string;
+  created: string;
+  /** Anything more the check had to say, or empty. */
+  detail: string;
+}
+
+/**
+ * What one page of a verification found.
+ *
+ * `scanned` is how many objects were looked at, `checked` how many were actually verified and `skipped`
+ * the rest - an upload still in progress, an archived object (its bytes are in a zip, not a file) and a
+ * directory marker are all skipped rather than reported as problems.
+ *
+ * `nextKey` is where to carry on from, and **empty when the bucket is exhausted**: a full page may have
+ * more behind it, a short one was the end.
+ */
+export interface VerifyObjectsResult {
+  bucketErn: string;
+  afterKey: string;
+  scanned: number;
+  checked: number;
+  skipped: number;
+  problems: ObjectProblem[];
+  nextKey: string;
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toBucket(document: unknown): Bucket {
@@ -285,6 +399,7 @@ export function toBucket(document: unknown): Bucket {
     encrypted: flag(document, "encrypted"),
     encryptionKeyErn: text(document, "encryptionKeyErn"),
     internal: flag(document, "internal"),
+    stopped: flag(document, "stopped"),
     priority: text(document, "priority"),
     created: text(document, "created"),
     modified: text(document, "modified"),
@@ -302,6 +417,10 @@ export function toEsmObject(document: unknown): EsmObject {
     md5Sum: text(document, "md5Sum"),
     encrypted: flag(document, "encrypted"),
     attributes: toVariantMap(object(document)["attributes"]),
+    // "STANDARD" when absent, which is what an object written before archiving existed is and what a
+    // euclid too old to report it means: online.
+    lifecycleState: text(document, "lifecycleState") || "STANDARD",
+    restoredUntil: text(document, "restoredUntil"),
     created: text(document, "created"),
     modified: text(document, "modified"),
   };
@@ -344,6 +463,75 @@ export function toRenameBucketResult(document: unknown): RenameBucketResult {
 
 export function toSetBucketInternalResult(document: unknown): SetBucketInternalResult {
   return { ern: text(document, "ern"), name: text(document, "name"), internal: flag(document, "internal") };
+}
+
+export function toObjectLifecycle(document: unknown): ObjectLifecycle {
+  return {
+    ern: text(document, "ern"),
+    bucketErn: text(document, "bucketErn"),
+    key: text(document, "key"),
+    lifecycleState: text(document, "lifecycleState") || "STANDARD",
+    archivedAt: text(document, "archivedAt"),
+    restoredAt: text(document, "restoredAt"),
+    restoredUntil: text(document, "restoredUntil"),
+    archiveFile: text(document, "archiveFile"),
+  };
+}
+
+export function toLifecycleRule(document: unknown): LifecycleRule {
+  return {
+    id: text(document, "id"),
+    prefix: text(document, "prefix"),
+    archiveAfterDays: number(document, "archiveAfterDays"),
+    restoreDays: number(document, "restoreDays"),
+    // A rule is in force unless it says otherwise, which is the server's own reading of an absent flag.
+    enabled: flag(document, "enabled", true),
+  };
+}
+
+export function toBucketLifecycle(document: unknown): BucketLifecycle {
+  return {
+    ern: text(document, "ern"),
+    name: text(document, "name"),
+    rules: documents(document, "rules").map(toLifecycleRule),
+  };
+}
+
+export function toBucketStateResult(document: unknown): BucketStateResult {
+  return {
+    ern: text(document, "ern"),
+    name: text(document, "name"),
+    stopped: flag(document, "stopped"),
+    held: number(document, "held"),
+    released: number(document, "released"),
+  };
+}
+
+export function toObjectProblem(document: unknown): ObjectProblem {
+  return {
+    key: text(document, "key"),
+    ern: text(document, "ern"),
+    problem: text(document, "problem"),
+    recordedSize: number(document, "recordedSize"),
+    fileSize: number(document, "fileSize"),
+    expectedFileSize: number(document, "expectedFileSize"),
+    internalName: text(document, "internalName"),
+    internalDir: text(document, "internalDir"),
+    created: text(document, "created"),
+    detail: text(document, "detail"),
+  };
+}
+
+export function toVerifyObjectsResult(document: unknown): VerifyObjectsResult {
+  return {
+    bucketErn: text(document, "bucketErn"),
+    afterKey: text(document, "afterKey"),
+    scanned: number(document, "scanned"),
+    checked: number(document, "checked"),
+    skipped: number(document, "skipped"),
+    problems: documents(document, "problems").map(toObjectProblem),
+    nextKey: text(document, "nextKey"),
+  };
 }
 
 export function toSetBucketPriorityResult(document: unknown): SetBucketPriorityResult {

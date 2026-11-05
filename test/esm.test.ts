@@ -14,7 +14,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-import { Euclid, parseBucketEvent, QUEUE, type EuclidEsm, type EuclidSession } from "../src/index.js";
+import {
+  Euclid,
+  LIFECYCLE_ARCHIVED,
+  LIFECYCLE_STANDARD,
+  parseBucketEvent,
+  QUEUE,
+  type EuclidEsm,
+  type EuclidSession,
+} from "../src/index.js";
 import { EuclidServiceError } from "../src/errors.js";
 import { AUTH_SIGNATURE } from "../src/index.js";
 import { MAX_PART_ATTEMPTS, OBJECT_CREATED } from "../src/modules/esm.js";
@@ -528,6 +536,170 @@ describe("subscriptions", () => {
     assert.deepEqual(event.attributes["supplier"], { type: "string", value: "acme" });
     assert.deepEqual(event.attributes["retries"], { type: "long", value: 2 });
     assert.deepEqual(event.systemAttributes["correlationId"], { type: "string", value: "c-4711" });
+  });
+});
+
+// -- archiving ------------------------------------------------------------------------------------
+
+describe("archiving", () => {
+  it("archives and restores one object, by ern or by bucket and key", async () => {
+    gateway.answer("esm", "archive-object", {
+      ern: `${BUCKET}/q3.pdf`,
+      bucketErn: BUCKET,
+      key: "q3.pdf",
+      lifecycleState: "ARCHIVED",
+      archivedAt: "2026-11-05T09:00:00Z",
+      archiveFile: "2026-11/reports.zip",
+    });
+
+    const archived = await esm.archiveObject({ bucketErn: BUCKET, key: "q3.pdf" });
+    assert.deepEqual(gateway.last().json(), { bucketErn: BUCKET, key: "q3.pdf" });
+    assert.equal(archived.lifecycleState, LIFECYCLE_ARCHIVED);
+    // The archive holding the bytes is named: one file per month, not a file per object.
+    assert.equal(archived.archiveFile, "2026-11/reports.zip");
+
+    gateway.answer("esm", "restore-object", {
+      ern: `${BUCKET}/q3.pdf`,
+      bucketErn: BUCKET,
+      key: "q3.pdf",
+      lifecycleState: "STANDARD",
+      restoredAt: "2026-11-05T09:05:00Z",
+      restoredUntil: "2026-11-12T09:05:00Z",
+      archiveFile: "2026-11/reports.zip",
+    });
+
+    // The ERN form, which is the other way a caller holds an object.
+    const restored = await esm.restoreObject({ ern: `${BUCKET}/q3.pdf` }, 7);
+    assert.deepEqual(gateway.last().json(), { ern: `${BUCKET}/q3.pdf`, days: 7 });
+    assert.equal(restored.lifecycleState, LIFECYCLE_STANDARD);
+    // A restore is a grace period rather than a state, and the archive stays named until it ends.
+    assert.deepEqual([restored.restoredUntil, restored.archiveFile], ["2026-11-12T09:05:00Z", "2026-11/reports.zip"]);
+  });
+
+  it("leaves days out when it was not given one", async () => {
+    // Zero is what says "use the covering rule's period", so sending it for an absent argument would
+    // give a bucket with no rule a restore of no days at all.
+    gateway.answer("esm", "restore-object", { ern: "x", lifecycleState: "STANDARD" });
+
+    await esm.restoreObject({ ern: "x" });
+
+    assert.deepEqual(gateway.last().json(), { ern: "x" });
+  });
+
+  it("reads an object with nothing said about its lifecycle as online", async () => {
+    // What an object written before archiving existed is, and what a euclid too old to report it means.
+    gateway.answer("esm", "list-objects", {
+      total: 1,
+      objects: [{ ern: "x", bucketErn: BUCKET, key: "q3.pdf", size: 8, status: "COMPLETED" }],
+    });
+
+    const [object] = (await esm.listObjects(BUCKET)).items;
+    assert.equal(object?.lifecycleState, LIFECYCLE_STANDARD);
+    assert.equal(object?.restoredUntil, "");
+  });
+
+  it("sets, reads and clears a bucket's lifecycle rules", async () => {
+    const rules = [
+      { id: "cold-reports", prefix: "reports/", archiveAfterDays: 90, restoreDays: 7, enabled: true },
+    ];
+    gateway.answer("esm", "set-bucket-lifecycle", { ern: BUCKET, name: "reports", rules });
+    gateway.answer("esm", "get-bucket-lifecycle", { ern: BUCKET, name: "reports", rules });
+    gateway.answer("esm", "delete-bucket-lifecycle", { ern: BUCKET, name: "reports", rules: [] });
+
+    const set = await esm.setBucketLifecycle(BUCKET, [
+      { id: "cold-reports", prefix: "reports/", archiveAfterDays: 90, restoreDays: 7 },
+    ]);
+    // enabled is sent either way: the server reads an absent flag as on, and a caller passing false
+    // means it.
+    assert.deepEqual(gateway.last().json(), {
+      ern: BUCKET,
+      rules: [{ id: "cold-reports", prefix: "reports/", archiveAfterDays: 90, restoreDays: 7, enabled: true }],
+    });
+    assert.equal(set.rules[0]?.archiveAfterDays, 90);
+
+    assert.equal((await esm.getBucketLifecycle(BUCKET)).rules.length, 1);
+    // Clearing the rules is not a restore: what is archived stays archived.
+    assert.deepEqual((await esm.deleteBucketLifecycle(BUCKET)).rules, []);
+  });
+
+  it("reads a rule that says nothing about being enabled as enabled", async () => {
+    gateway.answer("esm", "get-bucket-lifecycle", {
+      ern: BUCKET,
+      rules: [{ id: "cold", archiveAfterDays: 30, restoreDays: 3 }],
+    });
+
+    assert.equal((await esm.getBucketLifecycle(BUCKET)).rules[0]?.enabled, true);
+  });
+});
+
+// -- holding a bucket's events --------------------------------------------------------------------
+
+describe("stopping a bucket", () => {
+  it("holds its events and lets them go again", async () => {
+    gateway.answer("esm", "stop-bucket", { ern: BUCKET, name: "reports", stopped: true, held: 12 });
+
+    const stopped = await esm.stopBucket(BUCKET);
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET });
+    // The objects are untouched: what stops is the notifications, and they are kept rather than dropped.
+    assert.deepEqual([stopped.stopped, stopped.held], [true, 12]);
+
+    gateway.answer("esm", "start-bucket", { ern: BUCKET, name: "reports", stopped: false, released: 12 });
+    const started = await esm.startBucket(BUCKET);
+    assert.deepEqual([started.stopped, started.released], [false, 12]);
+  });
+
+  it("reports the flag on the bucket itself", async () => {
+    gateway.answer("esm", "list-buckets", {
+      total: 1,
+      buckets: [{ name: "reports", ern: BUCKET, stopped: true }],
+    });
+
+    assert.equal((await esm.listBuckets()).items[0]?.stopped, true);
+  });
+});
+
+// -- verifying ------------------------------------------------------------------------------------
+
+describe("verifying objects", () => {
+  it("checks a page and says where to carry on", async () => {
+    gateway.answer("esm", "verify-objects", {
+      bucketErn: BUCKET,
+      afterKey: "",
+      scanned: 10000,
+      checked: 9994,
+      skipped: 6,
+      nextKey: "reports/q3.pdf",
+      problems: [
+        {
+          key: "reports/q1.pdf",
+          ern: `${BUCKET}/reports/q1.pdf`,
+          problem: "size-mismatch",
+          recordedSize: 2048,
+          fileSize: 1024,
+          expectedFileSize: 2048,
+          internalName: "a1b2c3",
+          internalDir: "2026/11",
+          created: "2026-11-01",
+        },
+      ],
+    });
+
+    const result = await esm.verifyObjects(BUCKET, { limit: 10000 });
+
+    assert.deepEqual(gateway.last().json(), { bucketErn: BUCKET, limit: 10000 });
+    // Scanned, checked and skipped are three different numbers: an upload in progress, an archived
+    // object and a directory marker are skipped rather than reported as problems.
+    assert.deepEqual([result.scanned, result.checked, result.skipped], [10000, 9994, 6]);
+    assert.equal(result.problems[0]?.problem, "size-mismatch");
+    assert.deepEqual([result.problems[0]?.recordedSize, result.problems[0]?.fileSize], [2048, 1024]);
+    // A full page may have more behind it, and the next request carries on by key rather than index.
+    assert.equal(result.nextKey, "reports/q3.pdf");
+
+    gateway.answer("esm", "verify-objects", { bucketErn: BUCKET, scanned: 11, checked: 11, nextKey: "" });
+    const last = await esm.verifyObjects(BUCKET, { afterKey: "reports/q3.pdf" });
+    assert.deepEqual(gateway.last().json(), { bucketErn: BUCKET, afterKey: "reports/q3.pdf" });
+    // Empty is the end of the bucket, which is what stops a caller looping.
+    assert.equal(last.nextKey, "");
   });
 });
 

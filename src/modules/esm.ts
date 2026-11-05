@@ -52,7 +52,11 @@ import {
   type PurgeBucketResult,
   type RenameBucketResult,
   type SetBucketInternalResult,
+  type BucketLifecycle,
+  type BucketStateResult,
+  type ObjectLifecycle,
   type SetBucketPriorityResult,
+  type VerifyObjectsResult,
   type AbortUploadResult,
   type StoredObject,
   type TouchObjectResult,
@@ -72,7 +76,11 @@ import {
   toPurgeBucketResult,
   toRenameBucketResult,
   toSetBucketInternalResult,
+  toBucketLifecycle,
+  toBucketStateResult,
+  toObjectLifecycle,
   toSetBucketPriorityResult,
+  toVerifyObjectsResult,
   toStoredObject,
   toTouchObjectResult,
 } from "../dto/esm.js";
@@ -85,6 +93,13 @@ import type { EuclidSession } from "./eam.js";
 export const TARGET = "esm";
 
 /** The object events a subscription can ask for. Asking for none asks for all of them. */
+/**
+ * Where an object's bytes are. `STANDARD` is on disk and readable; `ARCHIVED` is in a month's archive and
+ * has to be restored before it can be read - see {@link EuclidEsm.restoreObject}.
+ */
+export const LIFECYCLE_STANDARD = "STANDARD";
+export const LIFECYCLE_ARCHIVED = "ARCHIVED";
+
 export const OBJECT_CREATED = "esm.object.created";
 export const OBJECT_UPDATED = "esm.object.updated";
 export const OBJECT_DELETED = "esm.object.deleted";
@@ -139,6 +154,35 @@ export interface DeleteBucketOptions {
   background?: boolean;
   /** Refuse with HTTP 409 rather than deleting, if the bucket holds anything at all. */
   ifEmpty?: boolean;
+}
+
+/**
+ * One object, named the way the caller happens to hold it: by its own ERN, or by its bucket and key.
+ *
+ * The server takes either and refuses both at once, so this is one or the other rather than a bag of
+ * optional fields.
+ */
+export type ObjectRef = { ern: string } | { bucketErn: string; key: string };
+
+/** One lifecycle rule as a caller writes it; `prefix` empty covers the whole bucket. */
+export interface LifecycleRuleInput {
+  /** The rule's own name, which has to be there and be unique within the bucket. */
+  id: string;
+  prefix?: string;
+  /** Days since an object was last accessed before it is archived; 1 to 36500. */
+  archiveAfterDays: number;
+  /** How long a restore of a covered object keeps it online; 1 to 36500. */
+  restoreDays: number;
+  /** On unless this says otherwise, which is how a rule is parked without being deleted. */
+  enabled?: boolean;
+}
+
+/** Where a verification carries on from, and how much of the bucket it takes. */
+export interface VerifyObjectsOptions {
+  /** The previous answer's `nextKey`; empty starts at the beginning of the bucket. */
+  afterKey?: string;
+  /** 1 to 100000 objects; the server's own default is 10000. */
+  limit?: number;
 }
 
 /** What to narrow a count to. Naming neither counts the whole bucket, markers excluded. */
@@ -212,6 +256,11 @@ export function parseBucketEvent(messageBody: string | Buffer): BucketEvent {
  * Built by {@link EuclidSession.esm} rather than directly, so that it shares that session's identity,
  * namespace and connection settings - and follows them as they change.
  */
+/** An object reference as the server reads it: an ERN, or a bucket and a key, never both. */
+function objectPayload(object: ObjectRef): Record<string, unknown> {
+  return "ern" in object ? { ern: object.ern } : { bucketErn: object.bucketErn, key: object.key };
+}
+
 export class EuclidEsm extends ModuleClient {
   /**
    * How long the byte-carrying actions may take, in milliseconds, or null for the session's own
@@ -597,6 +646,143 @@ export class EuclidEsm extends ModuleClient {
   async touchObject(bucketErn: string, options: TouchObjectOptions = {}): Promise<TouchObjectResult> {
     const payload = { ern: bucketErn, prefix: options.prefix ?? "", async: options.background ?? false };
     return toTouchObjectResult(await this.call("touch-object", payload));
+  }
+
+  /** How many bytes one object holds, by its ERN or by its bucket and key. */
+  async getObjectSize(object: ObjectRef): Promise<number> {
+    return this.numberOf("get-object-size", objectPayload(object), "size");
+  }
+
+  // -- archiving -------------------------------------------------------------------------------
+
+  /**
+   * Moves one object's bytes into an archive, leaving the object itself in place.
+   *
+   * The object stays listed, keeps its key, its size and its attributes, and answers every call about it
+   * except a read of its bytes: {@link getObject} and {@link downloadFile} need it restored first. What
+   * changes is where the bytes are - one archive file per month, rather than a file of their own.
+   *
+   * No rule is needed. This is what an operator does to something they know is not wanted online, where
+   * {@link setBucketLifecycle} is what a bucket does on its own.
+   *
+   * Idempotent: an object already archived is answered as it stands. Refused with HTTP 409 for an upload
+   * that has not finished, for a directory marker, and for an object of one of euclid's own buckets -
+   * those are read straight off the disk by the modules that use them, which know nothing of an archive.
+   */
+  async archiveObject(object: ObjectRef): Promise<ObjectLifecycle> {
+    return toObjectLifecycle(await this.call("archive-object", objectPayload(object)));
+  }
+
+  /**
+   * Brings an archived object's bytes back online, for a while.
+   *
+   * A restore is a grace period rather than a state: `restoredUntil` says when the object goes back to
+   * being archived, and the archive it came out of stays named until then, because the bytes are still in
+   * it. Idempotent, as {@link archiveObject} is.
+   *
+   * @param days how long to keep it online, 1 to 36500. Left out, the covering lifecycle rule's
+   *   `restoreDays` decides - which is what a bucket with rules means by a restore.
+   */
+  async restoreObject(object: ObjectRef, days?: number): Promise<ObjectLifecycle> {
+    const payload = objectPayload(object);
+    // Left out rather than sent as zero: zero is what says "use the rule's own period", and a bucket
+    // with no covering rule would be given a restore of no days at all.
+    if (days !== undefined) payload["days"] = days;
+    return toObjectLifecycle(await this.call("restore-object", payload));
+  }
+
+  /**
+   * The lifecycle rules a bucket archives by, as they now stand.
+   *
+   * An empty list is a bucket that archives nothing on its own, which is every bucket until somebody
+   * says otherwise.
+   */
+  async getBucketLifecycle(bucketErn: string): Promise<BucketLifecycle> {
+    return toBucketLifecycle(await this.call("get-bucket-lifecycle", { ern: bucketErn }));
+  }
+
+  /**
+   * Replaces a bucket's lifecycle rules - all of them, not one.
+   *
+   * Validated as a whole, so a bucket never ends up holding half of a set: a rule with no id, a period
+   * outside 1 to 36500 days, or two rules sharing an id refuses the request and changes nothing.
+   *
+   * Rules decide what to archive, not what to bring back. Objects already archived stay archived
+   * whatever is set here, and {@link restoreObject} is the only thing that returns one.
+   *
+   * Refused with HTTP 409 for one of euclid's own buckets - application artifacts and infrastructure
+   * declarations are read straight off the disk by the modules that use them.
+   */
+  async setBucketLifecycle(bucketErn: string, rules: readonly LifecycleRuleInput[]): Promise<BucketLifecycle> {
+    const payload = {
+      ern: bucketErn,
+      rules: rules.map((rule) => ({
+        id: rule.id,
+        prefix: rule.prefix ?? "",
+        archiveAfterDays: rule.archiveAfterDays,
+        restoreDays: rule.restoreDays,
+        // Sent either way, since the server reads an absent flag as enabled and a caller passing false
+        // means it.
+        enabled: rule.enabled ?? true,
+      })),
+    };
+    return toBucketLifecycle(await this.call("set-bucket-lifecycle", payload));
+  }
+
+  /**
+   * Removes every lifecycle rule from a bucket, so it archives nothing on its own from here on.
+   *
+   * Not a restore: what is already archived stays where it is, and {@link restoreObject} is what brings
+   * one back.
+   */
+  async deleteBucketLifecycle(bucketErn: string): Promise<BucketLifecycle> {
+    return toBucketLifecycle(await this.call("delete-bucket-lifecycle", { ern: bucketErn }));
+  }
+
+  // -- holding a bucket's events ---------------------------------------------------------------
+
+  /**
+   * Holds a bucket's event notifications instead of delivering them.
+   *
+   * The objects are untouched: what stops is the messages a subscription would have sent, and they are
+   * kept rather than dropped - `held` says how many are waiting. This is what a subscriber being
+   * redeployed asks for, and the bucket goes on accepting uploads throughout.
+   *
+   * Idempotent: stopping a stopped bucket changes nothing and says so.
+   */
+  async stopBucket(bucketErn: string): Promise<BucketStateResult> {
+    return toBucketStateResult(await this.call("stop-bucket", { ern: bucketErn }));
+  }
+
+  /**
+   * Delivers a stopped bucket's events again, and lets go of everything it held.
+   *
+   * `released` is how many went. Starting a bucket that was never stopped releases nothing and is not an
+   * error, which is what makes this safe to call when the state is not known.
+   */
+  async startBucket(bucketErn: string): Promise<BucketStateResult> {
+    return toBucketStateResult(await this.call("start-bucket", { ern: bucketErn }));
+  }
+
+  /**
+   * Checks a page of a bucket's objects against the files behind them.
+   *
+   * What it finds is the one failure a listing cannot show: a record whose file is missing, or whose file
+   * is not the size the record says. An upload in progress, an archived object and a directory marker are
+   * *skipped* rather than reported - the first has no final file yet and the second's bytes are in a zip.
+   *
+   * Paged by key rather than by index, because a bucket being written to while it is checked would
+   * otherwise skip or repeat objects: pass the previous answer's `nextKey` as `afterKey`, and stop when
+   * it comes back empty.
+   *
+   * @param bucketErn the bucket to check
+   * @param options where to carry on from, and how many objects to take - 1 to 100000, default 10000
+   */
+  async verifyObjects(bucketErn: string, options: VerifyObjectsOptions = {}): Promise<VerifyObjectsResult> {
+    const payload: Record<string, unknown> = { bucketErn };
+    if (options.afterKey) payload["afterKey"] = options.afterKey;
+    if (options.limit !== undefined) payload["limit"] = options.limit;
+    return toVerifyObjectsResult(await this.call("verify-objects", payload));
   }
 
   /** copy-object and move-object take the same request and differ only in whether the source survives. */
