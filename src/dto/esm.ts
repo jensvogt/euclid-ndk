@@ -40,6 +40,11 @@ export interface Bucket {
    */
   stopped: boolean;
   /**
+   * Whether an upload over an existing key keeps the object it replaces - see
+   * {@link import("../modules/esm.js").EuclidEsm.setBucketVersioning}.
+   */
+  versioning: boolean;
+  /**
    * Priority the notifications this bucket sends are given, empty when it sets none. Nothing about the
    * bucket depends on it - see
    * {@link import("../modules/esm.js").EuclidEsm.setBucketPriority}.
@@ -75,6 +80,14 @@ export interface EsmObject {
   lifecycleState: string;
   /** Until when a restored object stays online - its grace period - or empty. */
   restoredUntil: string;
+  /**
+   * Which version of the key this is, in a bucket with versioning on - and empty in one without.
+   *
+   * Given to each object stored while its bucket keeps versions, and to an object that had none when
+   * it is superseded and kept. So every *non-current* version has one, while a current object written
+   * before versioning was turned on may not.
+   */
+  versionId: string;
   created: string;
   modified: string;
 }
@@ -264,6 +277,18 @@ export interface StoredObject {
   status: string;
   contentType: string;
   md5Sum: string;
+  /** The version this upload became, in a bucket that keeps versions; empty in one that does not. */
+  versionId: string;
+  /**
+   * Whether the bytes were already the ones this key held, in which case **nothing was written**: no
+   * row, no file and no event.
+   *
+   * Only a versioning bucket answers this way, and it is not a failure - the object is there, with the
+   * bytes that were sent, and `versionId` is the version that already held them. A caller re-uploading
+   * what it uploaded before learns here that it changed nothing, which is the one thing a plain
+   * "stored" answer could not tell it.
+   */
+  unchanged: boolean;
 }
 
 /** An opened multipart upload: the ID every part of it carries. */
@@ -386,6 +411,50 @@ export interface VerifyObjectsResult {
   nextKey: string;
 }
 
+/**
+ * One version of a key: the object as it was when it was current.
+ *
+ * `latest` marks the one that is current now - the only one a read without a version returns, and the
+ * only one that lives in the object collection rather than the version collection.
+ */
+export interface ObjectVersion {
+  versionId: string;
+  latest: boolean;
+  size: number;
+  md5Sum: string;
+  contentType: string;
+  status: string;
+  /** `STANDARD` or `ARCHIVED`: a version can be archived like any other object. */
+  lifecycleState: string;
+  owner: string;
+  created: string;
+  modified: string;
+}
+
+/**
+ * Every version of one key, with the current object among them.
+ *
+ * `versioning` is the bucket's setting as it stands *now*, which is not necessarily what every version
+ * was written under: turning versioning off keeps the versions already made, so a listing can hold
+ * several while the bucket no longer keeps new ones.
+ */
+export interface ObjectVersions {
+  bucketErn: string;
+  key: string;
+  /** The key's own ERN, which every version of it shares. */
+  ern: string;
+  versioning: boolean;
+  total: number;
+  versions: ObjectVersion[];
+}
+
+/** A bucket and whether it now keeps the objects an upload replaces. */
+export interface BucketVersioningResult {
+  ern: string;
+  name: string;
+  versioning: boolean;
+}
+
 // -- parsers ---------------------------------------------------------------------------------------
 
 export function toBucket(document: unknown): Bucket {
@@ -400,6 +469,7 @@ export function toBucket(document: unknown): Bucket {
     encryptionKeyErn: text(document, "encryptionKeyErn"),
     internal: flag(document, "internal"),
     stopped: flag(document, "stopped"),
+    versioning: flag(document, "versioning"),
     priority: text(document, "priority"),
     created: text(document, "created"),
     modified: text(document, "modified"),
@@ -421,6 +491,7 @@ export function toEsmObject(document: unknown): EsmObject {
     // euclid too old to report it means: online.
     lifecycleState: text(document, "lifecycleState") || "STANDARD",
     restoredUntil: text(document, "restoredUntil"),
+    versionId: text(document, "versionId"),
     created: text(document, "created"),
     modified: text(document, "modified"),
   };
@@ -463,6 +534,40 @@ export function toRenameBucketResult(document: unknown): RenameBucketResult {
 
 export function toSetBucketInternalResult(document: unknown): SetBucketInternalResult {
   return { ern: text(document, "ern"), name: text(document, "name"), internal: flag(document, "internal") };
+}
+
+export function toObjectVersion(document: unknown): ObjectVersion {
+  return {
+    versionId: text(document, "versionId"),
+    latest: flag(document, "latest"),
+    size: number(document, "size"),
+    md5Sum: text(document, "md5Sum"),
+    contentType: text(document, "contentType"),
+    status: text(document, "status"),
+    lifecycleState: text(document, "lifecycleState") || "STANDARD",
+    owner: text(document, "owner"),
+    created: text(document, "created"),
+    modified: text(document, "modified"),
+  };
+}
+
+export function toObjectVersions(document: unknown): ObjectVersions {
+  return {
+    bucketErn: text(document, "bucketErn"),
+    key: text(document, "key"),
+    ern: text(document, "ern"),
+    versioning: flag(document, "versioning"),
+    total: number(document, "total"),
+    versions: documents(document, "versions").map(toObjectVersion),
+  };
+}
+
+export function toBucketVersioningResult(document: unknown): BucketVersioningResult {
+  return {
+    ern: text(document, "ern"),
+    name: text(document, "name"),
+    versioning: flag(document, "versioning"),
+  };
 }
 
 export function toObjectLifecycle(document: unknown): ObjectLifecycle {
@@ -619,6 +724,8 @@ export function toStoredObject(document: unknown): StoredObject {
     status: text(document, "status"),
     contentType: text(document, "contentType"),
     md5Sum: text(document, "md5Sum"),
+    versionId: text(document, "versionId"),
+    unchanged: flag(document, "unchanged"),
   };
 }
 

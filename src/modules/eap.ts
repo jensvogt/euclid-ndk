@@ -99,8 +99,14 @@ export const RUNTIME_JAVA21 = "JAVA21";
 export const RUNTIME_JAVA25 = "JAVA25";
 export const RUNTIME_PYTHON = "PYTHON";
 export const RUNTIME_NODEJS = "NODEJS";
-/** Anything already executable, which is where C++ and Rust applications land. */
+/** Anything already executable, which is where C++ and Go applications land. */
 export const RUNTIME_BINARY = "BINARY";
+/**
+ * The same process shape as {@link RUNTIME_BINARY} - a compiled executable, no interpreter - and there
+ * so that an application says what it is written in: which is what a console lists and what a log
+ * channel is named after.
+ */
+export const RUNTIME_RUST = "RUST";
 
 /**
  * The levels {@link EuclidEap.setLogLevel} accepts. An unrecognised one is refused rather than defaulted:
@@ -390,8 +396,8 @@ export class EuclidEap extends ModuleClient {
    *
    * @param applicationId application ID
    * @param runtime {@link RUNTIME_JAVA}, {@link RUNTIME_JAVA21}, {@link RUNTIME_JAVA25},
-   *   {@link RUNTIME_PYTHON}, {@link RUNTIME_NODEJS} or
-   *   {@link RUNTIME_BINARY}.
+   *   {@link RUNTIME_PYTHON}, {@link RUNTIME_NODEJS}, {@link RUNTIME_BINARY} or
+   *   {@link RUNTIME_RUST}.
    * @param bucket the name of the bucket holding the artifact - a name, not an ERN.
    * @param artifact the artifact's object key within that bucket.
    * @param options call options

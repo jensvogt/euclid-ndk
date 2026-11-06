@@ -632,6 +632,86 @@ describe("archiving", () => {
   });
 });
 
+// -- versioning -----------------------------------------------------------------------------------
+
+describe("versioning", () => {
+  it("turns it on, and reports it on the bucket", async () => {
+    gateway.answer("esm", "set-bucket-versioning", { ern: BUCKET, name: "reports", versioning: true });
+    gateway.answer("esm", "list-buckets", { total: 1, buckets: [{ name: "reports", ern: BUCKET, versioning: true }] });
+
+    const result = await esm.setBucketVersioning(BUCKET, true);
+
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, enabled: true });
+    assert.equal(result.versioning, true);
+    assert.equal((await esm.listBuckets()).items[0]?.versioning, true);
+
+    // False is a value, not an omission: it stops new versions and keeps the ones already made.
+    gateway.answer("esm", "set-bucket-versioning", { ern: BUCKET, name: "reports", versioning: false });
+    await esm.setBucketVersioning(BUCKET, false);
+    assert.deepEqual(gateway.last().json(), { ern: BUCKET, enabled: false });
+  });
+
+  it("lists every version of a key, with the current one marked", async () => {
+    gateway.answer("esm", "list-object-versions", {
+      bucketErn: BUCKET,
+      key: "q3.pdf",
+      ern: `${BUCKET}/q3.pdf`,
+      versioning: true,
+      total: 2,
+      versions: [
+        { versionId: "v-2", latest: true, size: 2048, md5Sum: "bbb", contentType: "application/pdf", status: "COMPLETED" },
+        { versionId: "v-1", latest: false, size: 1024, md5Sum: "aaa", status: "COMPLETED", lifecycleState: "ARCHIVED" },
+      ],
+    });
+
+    const listing = await esm.listObjectVersions(BUCKET, "q3.pdf");
+
+    assert.deepEqual(gateway.last().json(), { bucketErn: BUCKET, key: "q3.pdf" });
+    assert.deepEqual([listing.total, listing.versioning], [2, true]);
+    // latest marks the current object; the rest are what uploads replaced.
+    assert.deepEqual(listing.versions.map((version) => version.latest), [true, false]);
+    assert.deepEqual([listing.versions[0]?.versionId, listing.versions[0]?.size], ["v-2", 2048]);
+    // A version can be archived like any other object, and one that says nothing is online.
+    assert.deepEqual(
+      [listing.versions[0]?.lifecycleState, listing.versions[1]?.lifecycleState],
+      [LIFECYCLE_STANDARD, LIFECYCLE_ARCHIVED],
+    );
+  });
+
+  it("says when an upload changed nothing", async () => {
+    // A versioning bucket ignores an upload of the bytes the key already holds: no row, no file, no
+    // event. The object is there, so this is not a failure - it is the one thing a plain "stored"
+    // answer could not have told the caller.
+    const stored = await esm.putObject(BUCKET, "q3.pdf", Buffer.from("a report"));
+    assert.equal(stored.unchanged, false);
+    assert.equal(stored.versionId, "");
+  });
+
+  it("reads and deletes one version rather than the key", async () => {
+    gateway.answer("esm", "delete-object", {});
+
+    // Without a version the key goes, versions and all...
+    await esm.deleteObject(`${BUCKET}/q3.pdf`);
+    assert.deepEqual(gateway.last().json(), { ern: `${BUCKET}/q3.pdf` });
+
+    // ...and with one, only that version does, which is the only way a kept version is removed.
+    await esm.deleteObject(`${BUCKET}/q3.pdf`, "v-1");
+    assert.deepEqual(gateway.last().json(), { ern: `${BUCKET}/q3.pdf`, versionId: "v-1" });
+  });
+
+  it("asks for a version by header on an inline read", async () => {
+    await esm.putObject(BUCKET, "q3.pdf", Buffer.from("a report"));
+
+    // The bucket and the key travel as headers because the request carries bytes rather than a body;
+    // a version is asked for the same way.
+    await esm.getObject(BUCKET, "q3.pdf", 1024, "v-1");
+    assert.equal(gateway.last().headers["x-euclid-version-id"], "v-1");
+
+    await esm.getObject(BUCKET, "q3.pdf", 1024);
+    assert.equal(gateway.last().headers["x-euclid-version-id"], undefined);
+  });
+});
+
 // -- holding a bucket's events --------------------------------------------------------------------
 
 describe("stopping a bucket", () => {

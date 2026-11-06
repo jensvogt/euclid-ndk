@@ -287,6 +287,7 @@ calls scopes the second one.
 | `archiveObject`, `restoreObject` | moving one object's bytes into an archive, and bringing them back |
 | `getBucketLifecycle`, `setBucketLifecycle`, `deleteBucketLifecycle` | what a bucket archives on its own |
 | `stopBucket`, `startBucket` | holding a bucket's event notifications, and letting them go |
+| `setBucketVersioning`, `listObjectVersions` | keeping the object an upload replaces, and reading what it replaced |
 | `verifyObjects` | checking the files behind the records |
 | `touchObject` | re-announce objects already stored, for a listener that missed their events |
 | `addObjectAttribute`, `setObjectAttribute`, `listObjectAttributes`, `deleteObjectAttribute` | user-defined attributes |
@@ -351,6 +352,31 @@ archive what is being read. The set is validated as a whole - a rule with no id,
 archive, never what to bring back: clearing them with `deleteBucketLifecycle` leaves what is already
 archived where it is. euclid's own buckets cannot have rules at all, since the modules that read them know
 nothing of an archive.
+
+### Versioning
+
+With `setBucketVersioning(bucketErn, true)`, an upload over an existing key becomes the current object
+and the one it replaces is kept: its file stays on disk and its row moves to the version collection,
+where `listObjectVersions` finds it. Off - how every bucket starts - an upload replaces the object and
+its file.
+
+**An upload of bytes the key already holds is ignored.** Nothing is written, no event is published, and
+the upload answers `unchanged: true` with the version that already held them. Compared by MD5, so a
+re-upload of an identical file costs the transfer and nothing else, and a subscriber does not see an
+event for an object that did not change. That is worth knowing before turning versioning on: a caller
+that treats "stored" as "changed" would be wrong for the first time.
+
+```ts
+const versions = await esm.listObjectVersions(bucketErn, "q3.pdf");   // latest marks the current one
+await esm.downloadFile(bucketErn, "q3.pdf", "old.pdf", { versionId: versions.versions[1].versionId });
+await esm.deleteObject(objectErn, versions.versions[1].versionId);    // only that version
+```
+
+`getObject` and `downloadFile` read the current object unless given a `versionId`, and `deleteObject`
+with one removes **only that version** - which is the only way a kept version is ever removed, since
+turning versioning off keeps the ones already made. `Object.versionId` is empty for a current object
+written before versioning was turned on; every non-current version has one. `Bucket.versioning` reports
+the setting.
 
 ### Holding a bucket's events
 
@@ -768,6 +794,10 @@ await eap.createApplication("order-service", RUNTIME_JAVA, "artifacts", "order-s
 });
 await eap.startApplication("order-service");
 ```
+
+`RUNTIME_RUST` is the same process shape as `RUNTIME_BINARY` - a compiled executable, no interpreter -
+and exists so an application says what it is written in, which is what a console lists and what a log
+channel is named after.
 
 A runtime is matched exactly and in upper case. `RUNTIME_JAVA` is whichever java the host calls java, which
 is what every application deployed before the versioned runtimes existed says; `RUNTIME_JAVA21` and

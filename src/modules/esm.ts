@@ -54,7 +54,9 @@ import {
   type SetBucketInternalResult,
   type BucketLifecycle,
   type BucketStateResult,
+  type BucketVersioningResult,
   type ObjectLifecycle,
+  type ObjectVersions,
   type SetBucketPriorityResult,
   type VerifyObjectsResult,
   type AbortUploadResult,
@@ -78,7 +80,9 @@ import {
   toSetBucketInternalResult,
   toBucketLifecycle,
   toBucketStateResult,
+  toBucketVersioningResult,
   toObjectLifecycle,
+  toObjectVersions,
   toSetBucketPriorityResult,
   toVerifyObjectsResult,
   toStoredObject,
@@ -221,6 +225,12 @@ export interface UploadOptions extends AttributeOptions {
 export interface DownloadOptions {
   partSize?: number;
   concurrency?: number;
+  /**
+   * A non-current version to read instead of the object as it is now - see
+   * {@link EuclidEsm.listObjectVersions}. Empty reads the current object, which is what a bucket
+   * without versioning only ever has.
+   */
+  versionId?: string;
 }
 
 /** Which of a bucket's events a subscription asks for, and which keys they have to match. */
@@ -572,9 +582,19 @@ export class EuclidEsm extends ModuleClient {
     );
   }
 
-  /** Deletes one object, by its own ERN. */
-  async deleteObject(ern: string): Promise<void> {
-    await this.call("delete-object", { ern });
+  /**
+   * Deletes one object, by its own ERN.
+   *
+   * `versionId` deletes **only that version** of the key, leaving the others - which is how a version
+   * kept by {@link setBucketVersioning} is removed, since nothing else ever removes one. Without it the
+   * key goes, versions and all.
+   */
+  async deleteObject(ern: string, versionId = ""): Promise<void> {
+    const payload: Record<string, unknown> = { ern };
+    // Left out unless named: an empty version on the wire would read as "this version", and the
+    // server would look for one with no id.
+    if (versionId) payload["versionId"] = versionId;
+    await this.call("delete-object", payload);
   }
 
   /**
@@ -740,6 +760,40 @@ export class EuclidEsm extends ModuleClient {
   }
 
   // -- holding a bucket's events ---------------------------------------------------------------
+
+  /**
+   * Keeps the object an upload replaces, instead of overwriting it.
+   *
+   * With versioning on, an upload over an existing key becomes the current object and the one it
+   * replaces is kept as a non-current version: its file stays on disk and its row moves to the version
+   * collection, where {@link listObjectVersions} finds it. Off - which is how every bucket starts - an
+   * upload replaces the object and its file, as it always has.
+   *
+   * **An upload of bytes the key already holds is ignored**, which is the part worth knowing before
+   * turning this on: nothing is written, no event is published, and the upload answers with
+   * `unchanged: true` and the version that already held them. Compared by MD5, so a re-upload of an
+   * identical file costs the transfer and nothing else - and a subscriber does not see an event for an
+   * object that did not change.
+   *
+   * Turning it off keeps the versions already made; it only stops new ones. Nothing here deletes a
+   * version - {@link deleteObject} with a `versionId` does.
+   */
+  async setBucketVersioning(bucketErn: string, enabled: boolean): Promise<BucketVersioningResult> {
+    return toBucketVersioningResult(await this.call("set-bucket-versioning", { ern: bucketErn, enabled }));
+  }
+
+  /**
+   * Every version of one key, with the current object among them.
+   *
+   * `latest` marks the current one. The rest are what uploads replaced, newest first, each with the
+   * size and checksum it had - which is what makes this the way back to a file somebody overwrote.
+   *
+   * Answers for a key in a bucket that never kept versions too: one version, marked latest. A key that
+   * has neither a current object nor any version is HTTP 404.
+   */
+  async listObjectVersions(bucketErn: string, key: string): Promise<ObjectVersions> {
+    return toObjectVersions(await this.call("list-object-versions", { bucketErn, key }));
+  }
 
   /**
    * Holds a bucket's event notifications instead of delivering them.
@@ -923,8 +977,8 @@ export class EuclidEsm extends ModuleClient {
    * it is willing to take and an object at or above that comes back as HTTP 413.
    * {@link downloadFile} uses exactly that to decide whether an object needs the multipart path.
    */
-  async getObject(bucketErn: string, key: string, maxInlineSize = DEFAULT_PART_SIZE): Promise<Buffer> {
-    const response = await this.#getObject(bucketErn, key, maxInlineSize);
+  async getObject(bucketErn: string, key: string, maxInlineSize = DEFAULT_PART_SIZE, versionId = ""): Promise<Buffer> {
+    const response = await this.#getObject(bucketErn, key, maxInlineSize, versionId);
     if (!response.ok) throw new EuclidServiceError(TARGET, "get-object", response.status, response.text);
     return response.content;
   }
@@ -1007,7 +1061,7 @@ export class EuclidEsm extends ModuleClient {
     checkPartSize(partSize);
     const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
 
-    const inline = await this.#getObject(bucketErn, key, partSize);
+    const inline = await this.#getObject(bucketErn, key, partSize, options.versionId ?? "");
     if (inline.status !== PAYLOAD_TOO_LARGE) {
       if (!inline.ok) throw new EuclidServiceError(TARGET, "get-object", inline.status, inline.text);
       await mkdir(dirname(file), { recursive: true });
@@ -1015,7 +1069,7 @@ export class EuclidEsm extends ModuleClient {
       return inline.content.length;
     }
 
-    const download = await this.#createDownload(bucketErn, key, concurrency);
+    const download = await this.#createDownload(bucketErn, key, concurrency, options.versionId ?? "");
     await mkdir(dirname(file), { recursive: true });
     const sink = await open(file, "w");
     try {
@@ -1109,9 +1163,11 @@ export class EuclidEsm extends ModuleClient {
    * Retried on 5xx: the session it opens is scratch state keyed by a fresh download ID, so a retried
    * attempt starts a new one and the abandoned session is simply never used.
    */
-  async #createDownload(bucketErn: string, key: string, concurrency: number): Promise<CreateDownloadResult> {
+  async #createDownload(bucketErn: string, key: string, concurrency: number, versionId = ""): Promise<CreateDownloadResult> {
+    const payload: Record<string, unknown> = { bucketErn, key };
+    if (versionId) payload["versionId"] = versionId;
     return toCreateDownloadResult(
-      await this.#callWithRetry("create-download", { bucketErn, key }, concurrencyHeader(concurrency)),
+      await this.#callWithRetry("create-download", payload, concurrencyHeader(concurrency)),
     );
   }
 
@@ -1135,12 +1191,16 @@ export class EuclidEsm extends ModuleClient {
   }
 
   /** The raw response, so a caller can tell an object that was too large from one that failed. */
-  async #getObject(bucketErn: string, key: string, maxInlineSize: number): Promise<Response> {
-    return this.postBytes("get-object", Buffer.alloc(0), {
+  async #getObject(bucketErn: string, key: string, maxInlineSize: number, versionId = ""): Promise<Response> {
+    const headers: Record<string, string> = {
       "x-euclid-bucket-ern": bucketErn,
       "x-euclid-key": key,
       "x-euclid-part-size": String(maxInlineSize),
-    });
+    };
+    // A header rather than a field, because this request carries bytes rather than a body - the same
+    // reason the bucket and the key travel this way.
+    if (versionId) headers["x-euclid-version-id"] = versionId;
+    return this.postBytes("get-object", Buffer.alloc(0), headers);
   }
 
   // -- transport -------------------------------------------------------------------------------

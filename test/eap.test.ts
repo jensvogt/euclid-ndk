@@ -22,6 +22,7 @@ import {
   RUNTIME_JAVA,
   RUNTIME_JAVA21,
   RUNTIME_JAVA25,
+  RUNTIME_RUST,
   RUNTIME_PYTHON,
   STATE_RUNNING,
   STATE_STOPPED,
@@ -1096,8 +1097,8 @@ describe("how EAP behaves", () => {
     // anything else with a 400. A constant that drifted to "JAVA-21" would still read perfectly in
     // calling code and fail only against a running installation.
     assert.deepEqual(
-      [RUNTIME_JAVA, RUNTIME_JAVA21, RUNTIME_JAVA25],
-      ["JAVA", "JAVA21", "JAVA25"],
+      [RUNTIME_JAVA, RUNTIME_JAVA21, RUNTIME_JAVA25, RUNTIME_RUST],
+      ["JAVA", "JAVA21", "JAVA25", "RUST"],
     );
 
     // Three distinct runtimes, not one with aliases: a jar built for 25 does not start on 21, so
