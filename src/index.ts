@@ -12,10 +12,10 @@
  * session.close();
  * ```
  *
- * Twelve modules so far. EAM - euclid's access management module - is where a login comes from; ESM
+ * Thirteen modules so far. EAM - euclid's access management module - is where a login comes from; ESM
  * (storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets),
- * EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring) and EMM (the module manager itself)
- * are reached from the session it hands back:
+ * EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring), EMM (the module manager itself) and
+ * EDS (DNS) are reached from the session it hands back:
  *
  * ```ts
  * const bucket = await session.esm().createBucket("reports");
@@ -26,7 +26,7 @@
  * await session.eag().createRoute("orders", "/api/orders", { applicationId: "order-service" });
  * ```
  *
- * EES is the one module still to come, and speaks the same protocol through the same client;
+ * EAD, EES and EMD are the ones still to come, and speak the same protocol through the same client;
  * {@link EuclidSession.call} and
  * {@link import("./modules/base.js").ModuleClient.call} reach any action this SDK does not name.
  */
@@ -169,6 +169,12 @@ export type {
   TopicStateResult,
   TopicUpdateMessageBodyResult,
 } from "./dto/ens.js";
+export type {
+  AnswerRecord,
+  DnsAnswer,
+  DnsRecord,
+  HostedZone,
+} from "./dto/eds.js";
 export type { DeleteSecretResult, Secret, SecretValue } from "./dto/ess.js";
 export {
   GAUGE,
@@ -377,6 +383,27 @@ export {
   type CreateSecretOptions,
   type UpdateSecretChanges,
 } from "./modules/ess.js";
+export {
+  DEFAULT_ZONE_TTL,
+  EuclidEds,
+  MAX_TTL,
+  RCODE_NOERROR,
+  RCODE_NXDOMAIN,
+  RCODE_REFUSED,
+  RCODE_SERVFAIL,
+  RECORD_A,
+  RECORD_AAAA,
+  RECORD_CNAME,
+  RECORD_MX,
+  RECORD_NS,
+  RECORD_PTR,
+  RECORD_SRV,
+  RECORD_TXT,
+  ZONE_APEX,
+  type CreateZoneOptions,
+  type ListRecordsOptions,
+  type ListZonesOptions,
+} from "./modules/eds.js";
 export {
   EuclidEmm,
   MAX_WORKER_THREADS,

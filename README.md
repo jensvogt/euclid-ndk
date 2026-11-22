@@ -2,11 +2,11 @@
 
 Node.js client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
-Twelve modules so far. EAM - euclid's access management module - is where a login comes from; ESM
+Thirteen modules so far. EAM - euclid's access management module - is where a login comes from; ESM
 (storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets),
-EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring) and EMM (the module manager itself) are
-reached from the session it hands back. EES is the one module still to come, and speaks the same protocol
-over the same client.
+EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring), EMM (the module manager itself) and
+EDS (DNS) are reached from the session it hands back. EAD, EES and EMD are the ones still to come, and
+speak the same protocol over the same client.
 
 Requires Node 20 or newer, and **has no dependencies**. Installing this SDK does not bring a TLS
 stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and the
@@ -70,7 +70,7 @@ const { total, items } = await session.listAccounts({ pageSize: 5 });
 
 The other modules hang off that session - `session.esm()`, `session.eqs()`, `session.ens()`,
 `session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()`, `session.emo()`,
-`session.emm()` - and each answers
+`session.emm()`, `session.eds()` - and each answers
 with the same client every time, so asking for one inside a loop costs one connection rather than one
 per iteration:
 
@@ -1436,6 +1436,65 @@ is written when they do - the archive is authenticated as it is opened, so a hal
 state this can leave behind. Read `result.skipped` rather than the absence of an error: a collection this
 installation does not recognise is reported rather than refused, so an import that wrote nothing at all
 still succeeds.
+
+## What EDS covers
+
+`session.eds()` answers with the DNS client.
+
+| Method | Action |
+| --- | --- |
+| `createZone`, `getZone`, `listZones`, `deleteZone` | the domains this account answers for |
+| `putRecord`, `listRecords`, `deleteRecord` | the records in them |
+| `getAnswer` | what EDS would answer a query with, without a DNS client |
+| `metrics` | EDS's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+EDS is two servers in one process, and only one of them is here. This client manages zones and records
+with the usual credentials and grants; the DNS side listens on a UDP and a TCP port and answers anybody
+who asks, because DNS has no credentials. It serves these zones, the names euclid gives what it runs, and
+forwards everything else upstream for the networks allowed to recurse.
+
+```ts
+import { RECORD_A, RECORD_MX, ZONE_APEX } from "euclid-ndk";
+
+const zone = await eds.createZone("example.com", { description: "the public zone" });
+await eds.putRecord("example.com", "www", RECORD_A, ["192.0.2.10", "192.0.2.11"]);
+await eds.putRecord("example.com", ZONE_APEX, RECORD_MX, ["10 mail.example.com"]);
+```
+
+**A record is a set, not a row.** Three A values at one name are one answer with three addresses, so
+`putRecord` replaces every value at that name and type - a caller adding an address sends the whole
+list, and one sending a single value where three were stored is left with one. An empty list is refused
+rather than read as a delete; `deleteRecord` is that, and needs the type, because a name usually holds
+more than one and a delete taking a name alone would remove more than whoever wrote it meant.
+
+Names are completed with the zone: `www` in `example.com` becomes `www.example.com`, a qualified name
+outside the zone is refused rather than silently re-homed, and `ZONE_APEX` - or an empty name - is the
+zone itself. What comes back is always the qualified form, so a caller comparing what it wrote with what
+was stored compares against that. A zone's own SOA and NS records live at the apex and are the server's,
+which is why a CNAME there is refused: it would make the zone unanswerable.
+
+A zone is normalised - lower-cased, trailing dot dropped - and a zone inside the installation's service
+domain (`euclid.internal` unless it was changed) is refused: those names are answered from what the
+manager is running, and a zone over them would shadow the thing it is named after. `deleteZone` takes
+the records with it and answers how many went; there is no "only if empty".
+
+### Reading an answer back
+
+```ts
+const answer = await eds.getAnswer("www.example.com");
+```
+
+`getAnswer` reads **the catalogue the DNS side serves from**, not the database - which is what makes it
+the way to check that a change has landed. The DNS side never reads the database on a query, so a record
+written through this client is answered within a moment on the instance that took the write and within
+the installation's `euclid.modules.eds.refresh-seconds` on any other.
+
+It is also how to read what is not stored anywhere: a zone's SOA and NS records, and the names euclid
+gives what it runs. Nothing is forwarded upstream here, so the two kinds of nothing are worth telling
+apart - `authoritative: false` with `REFUSED` means the name is in no zone of this account's, where the
+DNS port would have forwarded it, while `NXDOMAIN` means the zone is ours and the name in it does not
+exist. An answer's records are one value each, where a stored set holds them together.
 
 ## Development
 
