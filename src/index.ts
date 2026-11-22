@@ -12,10 +12,11 @@
  * session.close();
  * ```
  *
- * Thirteen modules so far. EAM - euclid's access management module - is where a login comes from; ESM
+ * Fifteen modules so far. EAM - euclid's access management module - is where a login comes from; ESM
  * (storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets),
- * EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring), EMM (the module manager itself) and
- * EDS (DNS) are reached from the session it hands back:
+ * EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring), EMM (the module manager itself),
+ * EDS (DNS), EES (euclid's own events) and EAD (the audit trail) are reached from the session it hands
+ * back:
  *
  * ```ts
  * const bucket = await session.esm().createBucket("reports");
@@ -26,7 +27,7 @@
  * await session.eag().createRoute("orders", "/api/orders", { applicationId: "order-service" });
  * ```
  *
- * EAD, EES and EMD are the ones still to come, and speak the same protocol through the same client;
+ * EMD is the one still to come, and speaks the same protocol through the same client;
  * {@link EuclidSession.call} and
  * {@link import("./modules/base.js").ModuleClient.call} reach any action this SDK does not name.
  */
@@ -169,12 +170,21 @@ export type {
   TopicStateResult,
   TopicUpdateMessageBodyResult,
 } from "./dto/ens.js";
+export type { AuditEvent, AuditEvents } from "./dto/ead.js";
 export type {
   AnswerRecord,
   DnsAnswer,
   DnsRecord,
   HostedZone,
 } from "./dto/eds.js";
+export type {
+  AckResult,
+  Event,
+  EventSubscription,
+  EventSubscriptions,
+  ReceivedEvents,
+  UnsubscribeResult,
+} from "./dto/ees.js";
 export type { DeleteSecretResult, Secret, SecretValue } from "./dto/ess.js";
 export {
   GAUGE,
@@ -383,6 +393,21 @@ export {
   type CreateSecretOptions,
   type UpdateSecretChanges,
 } from "./modules/ess.js";
+export {
+  EuclidEad,
+  LIST_TOTAL_LIMIT,
+  type AuditQuery,
+} from "./modules/ead.js";
+export {
+  DEFAULT_EVENT_VISIBILITY,
+  DEFAULT_MAX_EVENTS,
+  DELIVERY_DURABLE,
+  DELIVERY_LIVE,
+  EuclidEes,
+  MAX_WAIT_TIME,
+  type ReceiveEventsOptions,
+  type SubscribeEventsOptions,
+} from "./modules/ees.js";
 export {
   DEFAULT_ZONE_TTL,
   EuclidEds,

@@ -57,7 +57,9 @@ import { EuclidEag } from "./eag.js";
 import { EuclidEap } from "./eap.js";
 import { EuclidEkm } from "./ekm.js";
 import { EuclidEkv } from "./ekv.js";
+import { EuclidEad } from "./ead.js";
 import { EuclidEds } from "./eds.js";
+import { EuclidEes } from "./ees.js";
 import { EuclidEmm } from "./emm.js";
 import { EuclidEmo } from "./emo.js";
 import { EuclidEns } from "./ens.js";
@@ -589,6 +591,16 @@ export class EuclidSession {
   /** EDS - euclid's domain name service - on this session's credentials. */
   eds(): EuclidEds {
     return this.#module("eds", () => new EuclidEds(this));
+  }
+
+  /** EES - euclid's event service - on this session's credentials. */
+  ees(): EuclidEes {
+    return this.#module("ees", () => new EuclidEes(this));
+  }
+
+  /** EAD - euclid's audit module - on this session's credentials. */
+  ead(): EuclidEad {
+    return this.#module("ead", () => new EuclidEad(this));
   }
 
   /** One client per module rather than one per call, built the first time it is asked for. */

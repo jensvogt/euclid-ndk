@@ -2,11 +2,11 @@
 
 Node.js client library for the [euclid](https://github.com/jensvogt/euclid) server.
 
-Thirteen modules so far. EAM - euclid's access management module - is where a login comes from; ESM
+Fifteen modules so far. EAM - euclid's access management module - is where a login comes from; ESM
 (storage), EQS (queues), ENS (notifications), EKM (keys), EKV (tables), EAP (applications), ESS (secrets),
-EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring), EMM (the module manager itself) and
-EDS (DNS) are reached from the session it hands back. EAD, EES and EMD are the ones still to come, and
-speak the same protocol over the same client.
+EAG (the API gateway), ETS (FTP and SFTP servers), EMO (monitoring), EMM (the module manager itself),
+EDS (DNS), EES (euclid's own events) and EAD (the audit trail) are reached from the session it hands
+back. EMD is the one still to come, and speaks the same protocol over the same client.
 
 Requires Node 20 or newer, and **has no dependencies**. Installing this SDK does not bring a TLS
 stack, an HTTP client and a JSON parser along with it: the wire protocol is JSON over HTTP and the
@@ -70,7 +70,7 @@ const { total, items } = await session.listAccounts({ pageSize: 5 });
 
 The other modules hang off that session - `session.esm()`, `session.eqs()`, `session.ens()`,
 `session.ekm()`, `session.ekv()`, `session.eap()`, `session.ess()`, `session.eag()`, `session.ets()`, `session.emo()`,
-`session.emm()`, `session.eds()` - and each answers
+`session.emm()`, `session.eds()`, `session.ees()`, `session.ead()` - and each answers
 with the same client every time, so asking for one inside a loop costs one connection rather than one
 per iteration:
 
@@ -1495,6 +1495,108 @@ gives what it runs. Nothing is forwarded upstream here, so the two kinds of noth
 apart - `authoritative: false` with `REFUSED` means the name is in no zone of this account's, where the
 DNS port would have forwarded it, while `NXDOMAIN` means the zone is ours and the name in it does not
 exist. An answer's records are one value each, where a stored set holds them together.
+
+## What EES covers
+
+`session.ees()` answers with the event client: a way to be a consumer of euclid's own events without
+being a euclid module.
+
+| Method | Action |
+| --- | --- |
+| `subscribeEvents`, `listSubscriptions`, `unsubscribeEvents` | what a subscriber watches |
+| `receiveEvents`, `ackEvents` | taking events, and saying they are done with |
+| `metrics` | EES's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+Everything euclid's modules publish already goes onto an internal bus that persists each delivery, hands
+it to one consumer at a time and keeps it until that consumer says it is done. This is how to be one of
+those consumers from outside:
+
+```ts
+await ees.subscribeEvents("reporting", ["esm.object.created"], { filter: { bucketName: "reports" } });
+
+const received = await ees.receiveEvents("reporting", { waitTime: 20 });
+for (const event of received.events) await handle(event);
+await ees.ackEvents("reporting", received.events.map((event) => event.eventId));
+```
+
+**A subscriber is a name, not a connection.** Two instances of one application share a name and so share
+one backlog - exactly one of them gets each event - while two applications watching the same thing use
+two names and each get their own copy. Nothing has to be created per bucket or per topic to arrange
+that, because the bus already fans out per subscriber.
+
+Delivery is at-least-once and unordered, the same guarantees a queue gives. A received event is claimed
+rather than consumed: invisible to other claimers until its lease expires, back in the backlog if it is
+never acknowledged, gone when it is - so `ackEvents` belongs after the work, not before it. An event's
+`attempts` above 1 is the one thing that tells a redelivery from a first delivery, and watching it is how
+a consumer finds the work it cannot finish instead of retrying it forever. An event nobody claims is
+expired by the bus after its retention period, so a consumer that never comes back cannot fill the
+database.
+
+`receiveEvents` long-polls: `waitTime` up to 20 seconds, and the wait is a wake-up rather than a poll -
+the bus hands over the moment an event is published. The bound is there because the wait holds a gateway
+worker thread, and the number of waiting requests is capped for the same reason, so clients waiting can
+never take the last thread from a client with something to do. `total` is how many events the answer
+carries, not how many wait; `listSubscriptions` counts the backlog, and is the only call that does -
+counting is a scan of it, so acknowledging, the hottest call a busy consumer makes, deliberately does
+not pay for it.
+
+Acknowledging fewer events than were named is not an error: a redelivery acknowledged twice and an event
+whose retention ran out both end the same way, and both mean the same thing to the caller. An event's
+`payload` is the publishing module's own object, untouched - `parseBucketEvent` reads an ESM one.
+
+`DELIVERY_LIVE` is the other mode: the event is handed over only while the subscriber is actually
+receiving and dropped otherwise, which is what something watching rather than processing - a console, a
+tail - wants, and what keeps a backlog nobody drains from costing anything.
+
+This is not the same as a bucket or topic subscription. `esm.subscribe` and its ENS sibling deliver into
+a queue or a topic, which is what an application that already consumes one wants; this hands the event
+straight to a client, with nothing created in EQS or ENS to carry it.
+
+## What EAD covers
+
+`session.ead()` answers with the audit client.
+
+| Method | Action |
+| --- | --- |
+| `listEvents`, `countEvents` | what was run, by whom, and how it was answered |
+| `purgeEvents` | pruning the trail |
+| `metrics` | EAD's own metrics |
+| `call(action, payload)` | anything the server gained that this SDK has not wrapped yet |
+
+**EAD only reads.** Every module records its own commands as it answers them, and that split is
+deliberate: an audit whose write path ran through a separate module would be missing entries exactly
+when that module was down - the likeliest moment for something worth auditing, and the easiest thing for
+somebody to arrange.
+
+```ts
+const page = await ead.listEvents({ module: "esm", command: "delete-bucket", pageSize: 50 });
+if (!page.totalExact) console.log(`at least ${page.total} matches`);
+```
+
+An entry holds the account, namespace, user, module and command, the parameters it carried and the
+status it was answered with. Parameters have their sensitive values replaced **on the writing side**, so
+there is no path by which a password reaches the collection at all.
+
+**A listing's `total` is capped**, and `totalExact` is what makes it honest rather than wrong: false
+means there are *at least* that many, which is all a pager needs to know there is a next page. An exact
+count reads an index entry per match, which on a trail of tens of millions is seconds of database time
+spent beside a page of fifty - and paid again on every page somebody turns. `countEvents` is the exact
+figure, worth asking once for a number somebody will read.
+
+What the trail leaves out is worth knowing before reading a gap as a missing entry. Successful **reads**
+are not recorded unless `euclid.modules.ead.audit-reads` asks for them: on a working installation they
+outnumber everything else by orders of magnitude and bury what the trail was kept for. Nor is what flows
+*through* a resource rather than being one - a message, an object, an item, an event, a part - when the
+command succeeded, because the trail is about the things somebody manages ("admin deleted queue X")
+while the traffic through them arrives in tens of thousands. A **failure** is recorded whatever it was
+acting on.
+
+`purgeEvents(olderThanDays)` is the one call here that writes, and it is **installation-wide** rather
+than scoped to the caller's account the way the reads are. A window is required and must be positive -
+the server refuses a purge with none rather than reading it as "everything". The purge is itself
+audited: a command that removes audit records is exactly the kind of thing an audit is kept for, and its
+entry lands in the trail it just pruned.
 
 ## Development
 
